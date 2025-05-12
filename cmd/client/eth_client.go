@@ -62,25 +62,35 @@ func (ec *EthereumClient) getAssertionLog(ctx context.Context, topic common.Hash
 		return nil, err
 	}
 
-	query := ethereum.FilterQuery{
-		FromBlock: big.NewInt(0),
-		ToBlock:   big.NewInt(int64(latestBlock)),
-		Addresses: []common.Address{ec.contractAddr},
-		Topics: [][]common.Hash{
-			{topic},
-			{assertionHash}, // indexed topic1
-		},
-	}
+	var log *types.Log
 
-	logs, err := ec.provider.FilterLogs(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	if len(logs) == 0 {
-		return nil, fmt.Errorf("no logs found for topic %s", topic.Hex())
-	}
+	for log == nil {
+		query := ethereum.FilterQuery{
+			FromBlock: big.NewInt(int64(latestBlock - 499)),
+			ToBlock:   big.NewInt(int64(latestBlock)),
+			Addresses: []common.Address{ec.contractAddr},
+			Topics: [][]common.Hash{
+				{topic},
+				{assertionHash}, // indexed topic1
+			},
+		}
 
-	return &logs[0], nil
+		logs, err := ec.provider.FilterLogs(ctx, query)
+		if err != nil {
+			latestBlock -= 499
+			continue
+			// return nil, err
+		}
+		if len(logs) == 0 {
+			latestBlock -= 499
+			continue
+			// return nil, fmt.Errorf("no logs found for topic %s", topic.Hex())
+		}
+
+		return &logs[0], nil
+
+	}
+	return nil, fmt.Errorf("no log found for topic %s", topic.Hex())
 }
 
 func (ec *EthereumClient) GetAssertionConfirmedLog(ctx context.Context) (*rollupcore.RollupCoreAssertionConfirmed, error) {
