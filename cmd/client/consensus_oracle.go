@@ -1,18 +1,19 @@
-package batchhandler
+package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"errors"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
-	flag "github.com/spf13/pflag"
 
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/offchainlabs/nitro/arbnode"
 	"github.com/offchainlabs/nitro/arbos/arbostypes"
 	"github.com/offchainlabs/nitro/arbstate/daprovider"
 	"github.com/offchainlabs/nitro/cmd/chaininfo"
-	"github.com/offchainlabs/nitro/cmd/util/confighelpers"
 	"github.com/offchainlabs/nitro/solgen/go/bridgegen"
 	"github.com/offchainlabs/nitro/util/headerreader"
 )
@@ -33,50 +34,63 @@ type DasHandlerType struct {
 	ChainInfoFile         string                        `koanf:"chain-info-file"`
 }
 
-const defaultChainInfoFile = "../nitro/cmd/chaininfo/arbitrum_chain_info.json"
+const defaultChainInfoFile = "./nitro/cmd/chaininfo/arbitrum_chain_info.json"
 
-func parseBatchHandlerType(args []string) (*BatchHandlerType, error) {
-	f := flag.NewFlagSet("batchHandler", flag.ContinueOnError)
-	f.String("parent-chain-node-url", "", "URL for parent chain node")
-	f.String("parent-chain-submission-tx-hash", "", "The batch submission transaction hash")
-	f.Uint64("child-chain-id", 0, "Child chain id")
-	f.String("chain-info-file", "", "Chain info file")
-	headerreader.BlobClientAddOptions("blob-client", f)
-
-	k, err := confighelpers.BeginCommonParse(f, args)
-	if err != nil {
-		println("error 1")
-		return nil, err
-	}
-
-	var config BatchHandlerType
-	if err := confighelpers.EndCommonParse(k, &config); err != nil {
-		println("error 2")
-		return nil, err
-	}
-	return &config, nil
+func getSha256(msg []byte) string {
+	hasher := sha256.New()
+	hasher.Write(msg)
+	return base64.URLEncoding.EncodeToString(hasher.Sum(nil))
 }
 
-func parseDasHandlerType(args []string) (*BatchHandlerType, error) {
-	f := flag.NewFlagSet("batchHandler", flag.ContinueOnError)
-	f.String("parent-chain-node-url", "", "URL for parent chain node")
-	f.String("parent-chain-submission-tx-hash", "", "The batch submission transaction hash")
-	f.Uint64("child-chain-id", 0, "Child chain id")
-	f.String("chain-info-file", "", "Chain info file")
+func ExecuteConsensusOracle(ctx context.Context, prevL1Data MessageTrackingL1Data, currL1Data MessageTrackingL1Data, parentChainURL string, childChainId uint64, beaconRPCURL string) (bool, error) {
+	if prevL1Data.L1TxHash == currL1Data.L1TxHash {
+		messages, _, err := StartBatchHandler(ctx, prevL1Data, parentChainURL, childChainId, beaconRPCURL)
+		if err != nil {
+			return false, err
+		}
 
-	k, err := confighelpers.BeginCommonParse(f, args)
+		for i := 0; i < len(messages); i++ {
+			if getSha256(messages[i].L2msg) == getSha256(prevL1Data.Message.L2msg) && getSha256(messages[i+1].L2msg) == getSha256(currL1Data.Message.L2msg) {
+				return true, nil
+			}
+		}
+		return false, errors.New("messages are not consecutive")
+	}
+
+	// if the tx hash is different, we need to get the messages from two batches
+	messages1, targetBatchNum1, err := StartBatchHandler(ctx, prevL1Data, parentChainURL, childChainId, beaconRPCURL)
 	if err != nil {
-		return nil, err
+		return false, err
+	}
+	messages2, targetBatchNum2, err := StartBatchHandler(ctx, currL1Data, parentChainURL, childChainId, beaconRPCURL)
+
+	if err != nil {
+		return false, err
 	}
 
-	var config BatchHandlerType
-	if err := confighelpers.EndCommonParse(k, &config); err != nil {
-		return nil, err
+	if targetBatchNum2-targetBatchNum1 != 1 {
+		return false, errors.New("target batch numbers are not consecutive")
 	}
-	return &config, nil
+
+	last := messages1[len(messages1)-1]
+	first := messages2[0]
+
+	// fmt.Println("Comparing", getSha256(last.L2msg), getSha256(prevL1Data.Message.L2msg))
+	// fmt.Println("Comparing", getSha256(first.L2msg), getSha256(currL1Data.Message.L2msg))
+
+	// fmt.Println("last", last.Header.Kind)
+	// fmt.Println("first", first.Header.Kind)
+
+	if getSha256(last.L2msg) == getSha256(prevL1Data.Message.L2msg) && getSha256(first.L2msg) == getSha256(currL1Data.Message.L2msg) {
+		return true, nil
+	} else {
+		return false, errors.New("messages are not consecutive")
+	}
 }
 
-func StartBatchHandler(ctx context.Context, parentChainURL, txHash string, childChainId uint64, beaconRPCURL string) (*arbostypes.L1IncomingMessage, error) {
+func StartBatchHandler(ctx context.Context, L1Data MessageTrackingL1Data, parentChainURL string, childChainId uint64, beaconRPCURL string) ([]*arbostypes.L1IncomingMessage, uint64, error) {
+	txHash := L1Data.L1TxHash.Hex()
+
 	config := &BatchHandlerType{
 		ParentChainNodeURL:    parentChainURL,
 		BatchSubmissionTxHash: txHash,
@@ -94,22 +108,22 @@ func StartBatchHandler(ctx context.Context, parentChainURL, txHash string, child
 
 	chainConfig, err := chaininfo.GetRollupAddressesConfig(config.ChildChainId, "", chainInfoFiles, "")
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	var parentChainClient *ethclient.Client
-	parentChainClient, err = ethclient.DialContext(ctx, config.ParentChainNodeURL)
+	parentChainClient, _ = ethclient.DialContext(ctx, config.ParentChainNodeURL)
 
 	submissionTxReceipt, err := parentChainClient.TransactionReceipt(ctx, common.HexToHash(config.BatchSubmissionTxHash))
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to get transaction receipt: %w", err)
+		return nil, 0, fmt.Errorf("failed to get transaction receipt: %w", err)
 	}
 
 	seqFilter, err := bridgegen.NewSequencerInboxFilterer(chainConfig.SequencerInbox, parentChainClient)
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	batchMap := make(map[uint64]*arbnode.SequencerInboxBatch)
@@ -117,21 +131,19 @@ func StartBatchHandler(ctx context.Context, parentChainURL, txHash string, child
 	seqInbox, err := arbnode.NewSequencerInbox(parentChainClient, chainConfig.SequencerInbox, 0)
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	batches, err := seqInbox.LookupBatchesInRange(ctx, submissionTxReceipt.BlockNumber, submissionTxReceipt.BlockNumber)
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	targetBatchNum, err := getBatchSeqNumFromSubmission(submissionTxReceipt, seqFilter)
 
-	fmt.Println("targetBatchNum", targetBatchNum)
-
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	var batch *arbnode.SequencerInboxBatch
@@ -144,7 +156,7 @@ func StartBatchHandler(ctx context.Context, parentChainURL, txHash string, child
 	}
 
 	if batch == nil {
-		return nil, ErrBatchNotFound
+		return nil, 0, ErrBatchNotFound
 	}
 
 	backend := &MultiplexerBackend{
@@ -171,20 +183,20 @@ func StartBatchHandler(ctx context.Context, parentChainURL, txHash string, child
 
 	err = setDelayedToBackendByIndexRange(ctx, parentChainClient, chainConfig.SequencerInbox, chainConfig.Bridge, int64(lastBatchDelayedCount), int64(batch.AfterDelayedCount)-1, backend)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get delayed msg: %w", err)
+		return nil, 0, fmt.Errorf("failed to get delayed msg: %w", err)
 	}
 
 	err = getPostingReportBatchAndfillin(ctx, parentChainClient, seqInbox, backend, batchFetcher)
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	blobClient, err := headerreader.NewBlobClient(config.BlobClient, parentChainClient)
 	blobClient.Initialize(ctx)
 	if err != nil {
 		fmt.Println("failed to initialize blob client", "err", err)
-		return nil, err
+		return nil, 0, err
 	}
 
 	var dapReaders []daprovider.Reader
@@ -194,57 +206,34 @@ func StartBatchHandler(ctx context.Context, parentChainURL, txHash string, child
 	bytes, batchBlockHash, err := backend.PeekSequencerInbox()
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-
-	fmt.Println("batchBlockHash", batchBlockHash)
 
 	parsedSequencerMsg, err := ParseSequencerMessage(ctx, backend.batchSeqNum, batchBlockHash, bytes, dapReaders, daprovider.KeysetPanicIfInvalid)
 
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	// txes, err := getTxHash(parsedSequencerMsg, lastBatchDelayedCount, backend)
+	messages, err := LoadMessages(parsedSequencerMsg, lastBatchDelayedCount, backend)
+
+	return messages, targetBatchNum, nil
+
 	// if err != nil {
-	// 	fmt.Println("failed to get tx hash")
-	// 	return err
-	// }
-	// for i := 0; i < len(txes); i++ {
-	// 	fmt.Println(txes[i].Hash().Hex())
+	// 	return nil, err
 	// }
 
-	// fmt.Println("Found tx numbder: ", len(txes))
+	// batchData, err := batchFetcher(targetBatchNum)
 
-	msg, err := getMessage(parsedSequencerMsg, 4, backend, lastBatchDelayedCount)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	if err != nil {
-		return nil, err
-	}
+	// gas := arbostypes.ComputeBatchGasCost(batchData)
+	// msg.BatchGasCost = &gas
 
-	batchData, err := batchFetcher(targetBatchNum)
-
-	if err != nil {
-		return nil, err
-	}
-
-	gas := arbostypes.ComputeBatchGasCost(batchData)
-	msg.BatchGasCost = &gas
-
-	if err != nil {
-		fmt.Println("error", err)
-		panic(err)
-	}
-
-	return msg, nil
-}
-
-func startDASHandler(args []string) error {
-	_, err := parseDasHandlerType(args)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("retrieveFromDAS is not supported now")
-	return nil
+	// if err != nil {
+	// 	fmt.Println("error", err)
+	// 	panic(err)
+	// }
 }

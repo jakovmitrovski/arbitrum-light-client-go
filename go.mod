@@ -10,6 +10,7 @@ go 1.23.0
 
 require (
 	github.com/ethereum/go-ethereum v1.15.5
+	github.com/holiman/uint256 v1.3.2
 	github.com/joho/godotenv v1.5.1
 	github.com/offchainlabs/nitro v0.0.0-20241211010535-2b3b823ddf3f
 	github.com/spf13/pflag v1.0.5
@@ -104,7 +105,6 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/holiman/billy v0.0.0-20240216141850-2abb0c79d3c4 // indirect
 	github.com/holiman/bloomfilter/v2 v2.0.3 // indirect
-	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/jmoiron/sqlx v1.4.0 // indirect

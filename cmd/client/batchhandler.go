@@ -1,4 +1,4 @@
-package batchhandler
+package main
 
 import (
 	"context"
