@@ -7,6 +7,10 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/rawdb"
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -14,6 +18,12 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/trie"
+	"github.com/ethereum/go-ethereum/triedb"
+	"github.com/holiman/uint256"
+	"github.com/offchainlabs/nitro/arbos"
+	"github.com/offchainlabs/nitro/arbos/arbostypes"
+	"github.com/offchainlabs/nitro/arbos/l1pricing"
+	"github.com/offchainlabs/nitro/arbos/l2pricing"
 )
 
 // ArbitrumClient wraps an Ethereum JSON-RPC client with extra methods
@@ -21,6 +31,36 @@ type ArbitrumClient struct {
 	ethClient *ethclient.Client
 	rpcClient *rpc.Client
 }
+
+// L2 Tracking
+type MessageTrackingL2Data struct {
+	L2BlockNumber uint64
+	L2BlockHash   common.Hash
+}
+
+type MessageTrackingL1Data struct {
+	Message      arbostypes.L1IncomingMessage
+	L1TxHash     common.Hash
+	DataLocation uint8
+}
+
+type StateAtReturnData struct {
+	Message                arbostypes.L1IncomingMessage
+	L2BlockNumber          uint64
+	L2BlockHash            common.Hash
+	L1PricingState         l1pricing.L1PricingState
+	L2PricingState         l2pricing.L2PricingState
+	BrotliCompressionLevel uint64
+
+	L1TxHash     common.Hash
+	DataLocation uint8
+}
+
+type L1Index struct {
+	StateIndex uint64
+}
+
+const ARBITRUM_ONE_GENESIS_BLOCK = 22207817
 
 // NewArbitrumClient initializes a new ArbitrumClient
 func NewArbitrumClient(rpcURL string) (*ArbitrumClient, error) {
@@ -32,6 +72,7 @@ func NewArbitrumClient(rpcURL string) (*ArbitrumClient, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return &ArbitrumClient{ethClient: ethClient, rpcClient: rpcClient}, nil
 }
 
@@ -41,6 +82,16 @@ func (c *ArbitrumClient) GetBlockByHash(ctx context.Context, hash common.Hash) (
 	if err != nil {
 		return nil, fmt.Errorf("block not found: %w", err)
 	}
+
+	return block, nil
+}
+
+func (c *ArbitrumClient) GetBlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.Block, error) {
+	block, err := c.ethClient.BlockByNumber(ctx, blockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("block not found: %w", err)
+	}
+
 	return block, nil
 }
 
@@ -83,25 +134,68 @@ func (c *ArbitrumClient) VerifyBlockHash(header *types.Header, expectedHash comm
 	return actualHash == expectedHash
 }
 
-// VerifyProof is a stub — full MPT proof verification isn't in go-ethereum directly
-// func (c *ArbitrumClient) VerifyProof(stateRoot common.Hash, proof *EthGetProofResult) bool {
-// 	// Note: This is a placeholder. Full MPT proof verification would require custom implementation.
-// 	fmt.Println("🔒 Verifying proof against state root:", stateRoot.Hex())
+type AccessList struct {
+	Address     common.Address
+	StorageKeys []common.Hash
+}
 
-// 	// Decode account and storage values to verify manually if needed
-// 	balance, _ := new(big.Int).SetString(proof.Balance[2:], 16)
-// 	nonce, _ := new(big.Int).SetString(proof.Nonce[2:], 16)
+type TransactionArgs struct {
+	From  *common.Address `json:"from"`
+	To    *common.Address `json:"to"`
+	Data  hexutil.Bytes   `json:"data"`
+	Value *hexutil.Big    `json:"value"`
+	Gas   *hexutil.Big    `json:"gas"`
+	Type  *uint64         `json:"type"`
+	// GasPrice             *hexutil.Big    `json:"gasPrice,omitempty"`
+	MaxPriorityFeePerGas *hexutil.Big `json:"maxPriorityFeePerGas,omitempty"`
+	MaxFeePerGas         *hexutil.Big `json:"maxFeePerGas,omitempty"`
+	// GasLimit             *hexutil.Big    `json:"gasLimit,omitempty"`
+}
 
-// 	fmt.Printf("Account: balance=%s, nonce=%s, codeHash=%s\n", balance.String(), nonce.String(), proof.CodeHash)
+func createAccessListArgs(tx *types.Transaction, header *types.Header) TransactionArgs {
+	gas := tx.Gas()
+	if gas == 0 {
+		gas = header.GasLimit
+	}
 
-// 	for _, sp := range proof.StorageProofs {
-// 		fmt.Printf("Storage key %s = %s\n", sp.Key, sp.Value)
-// 		// Normally, you'd validate Merkle proofs here
-// 	}
+	fmt.Println("tx", tx.Type())
 
-// 	fmt.Println("⚠️ Proof validation not implemented — only structure checked.")
-// 	return true
-// }
+	// TODO: this is a hack...
+	if tx.Type() == types.LegacyTxType && tx.Data() != nil {
+		gas *= 2
+	}
+
+	from, err := types.Sender(types.LatestSignerForChainID(tx.ChainId()), tx)
+	if err != nil {
+		from = common.Address{}
+	}
+
+	args := TransactionArgs{
+		From:  &from,
+		To:    tx.To(),
+		Data:  hexutil.Bytes(tx.Data()),
+		Value: (*hexutil.Big)(tx.Value()),
+		Gas:   (*hexutil.Big)(big.NewInt(int64(gas))),
+	}
+
+	switch tx.Type() {
+	case types.DynamicFeeTxType:
+		args.MaxFeePerGas = (*hexutil.Big)(tx.GasFeeCap())
+		if args.MaxFeePerGas.ToInt().Cmp(header.BaseFee) < 0 {
+			args.MaxFeePerGas = (*hexutil.Big)(big.NewInt(int64(header.BaseFee.Uint64())))
+		}
+		args.MaxPriorityFeePerGas = (*hexutil.Big)(tx.GasTipCap())
+	default:
+
+		// args.GasPrice = (*hexutil.Big)(tx.GasPrice())
+		// if args.GasPrice.ToInt().Cmp(header.BaseFee) < 0 {
+		// 	args.GasPrice = (*hexutil.Big)(big.NewInt(int64(header.BaseFee.Uint64())))
+		// }
+		// args.GasLimit = (*hexutil.Big)(big.NewInt(int64(header.GasLimit)))
+	}
+
+	return args
+}
 
 func (c *ArbitrumClient) VerifyStateProof(stateRoot common.Hash, proof *EthGetProofResult) bool {
 	addr := common.HexToAddress(proof.Address)
@@ -225,4 +319,356 @@ func trimHexPrefix(s string) string {
 		return s[2:]
 	}
 	return s
+}
+
+func (c *ArbitrumClient) GetStateDBFromProofs(ctx context.Context, msg *arbostypes.L1IncomingMessage, header *types.Header, chainId uint64) (*state.StateDB, []struct {
+	AccessList []struct {
+		Address     string   `json:"address"`
+		StorageKeys []string `json:"storageKeys"`
+	} `json:"accessList"`
+}, error) {
+	// Step 1: Parse L2 transactions
+	txs, err := arbos.ParseL2Transactions(msg, big.NewInt(int64(chainId)))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse L2 transactions: %w", err)
+	}
+
+	if err != nil {
+		fmt.Println("error", err)
+	}
+
+	accessListResults := make([]struct {
+		AccessList []struct {
+			Address     string   `json:"address"`
+			StorageKeys []string `json:"storageKeys"`
+		} `json:"accessList"`
+	}, len(txs))
+	proofs := make([][]*EthGetProofResult, len(txs))
+
+	// Step 2: Create memory DB and collect proofs
+	memdb := rawdb.NewMemoryDatabase()
+
+	for i, tx := range txs {
+		// Fetch access list for the tx
+		var accessListResp struct {
+			AccessList []struct {
+				Address     string   `json:"address"`
+				StorageKeys []string `json:"storageKeys"`
+			} `json:"accessList"`
+		}
+
+		txArgs := createAccessListArgs(tx, header)
+		err = c.rpcClient.CallContext(ctx, &accessListResp, "eth_createAccessList", txArgs, hexutil.EncodeUint64(header.Number.Uint64()))
+		if err != nil {
+			return nil, nil, fmt.Errorf("access list creation failed: %w", err)
+		}
+
+		// Include sender
+		accessListResp.AccessList = append(accessListResp.AccessList, struct {
+			Address     string   `json:"address"`
+			StorageKeys []string `json:"storageKeys"`
+		}{Address: txArgs.From.Hex(), StorageKeys: []string{}})
+
+		accessListResults[i] = accessListResp
+
+		// Collect proofs and populate memdb
+		for _, entry := range accessListResp.AccessList {
+			addr := common.HexToAddress(entry.Address)
+
+			proof, err := c.GetProof(ctx, *header.Number, addr, entry.StorageKeys)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to get proof for %s: %w", addr, err)
+			}
+
+			proofs[i] = append(proofs[i], proof)
+
+			if !c.VerifyStateProof(header.Root, proof) {
+				return nil, nil, fmt.Errorf("invalid proof for %s", addr)
+			}
+
+			for _, encodedNode := range proof.AccountProof {
+				nodeBytes, err := hex.DecodeString(trimHexPrefix(encodedNode))
+				if err != nil {
+					return nil, nil, fmt.Errorf("decode account node: %w", err)
+				}
+				hash := crypto.Keccak256Hash(nodeBytes)
+				if err := memdb.Put(hash.Bytes(), nodeBytes); err != nil {
+					return nil, nil, fmt.Errorf("put account node: %w", err)
+				}
+			}
+			for _, sp := range proof.StorageProofs {
+				for _, encodedNode := range sp.Proof {
+					nodeBytes, err := hex.DecodeString(trimHexPrefix(encodedNode))
+					if err != nil {
+						return nil, nil, fmt.Errorf("decode storage node: %w", err)
+					}
+					hash := crypto.Keccak256Hash(nodeBytes)
+					if err := memdb.Put(hash.Bytes(), nodeBytes); err != nil {
+						return nil, nil, fmt.Errorf("put storage node: %w", err)
+					}
+				}
+			}
+		}
+	}
+
+	// Step 3: Initialize triedb and statedb
+	tdb := triedb.NewDatabase(memdb, nil)
+	sdb := state.NewDatabase(tdb, nil)
+	statedb, err := state.New(header.Root, sdb)
+	if err != nil {
+		fmt.Println("header root: ", header.Root.Hex())
+		return nil, nil, fmt.Errorf("failed to create statedb: %w", err)
+	}
+
+	// Step 4: Apply known account and storage values
+	for i := range proofs {
+		// txArgs := createAccessListArgs(tx, header)
+		// err := c.rpcClient.CallContext(ctx, &accessListResp, "eth_createAccessList", txArgs, hexutil.EncodeUint64(header.Number.Uint64()))
+		// if err != nil {
+		// 	return nil, fmt.Errorf("access list creation failed: %w", err)
+		// }
+		// accessListResp.AccessList = append(accessListResp.AccessList, struct {
+		// 	Address     string   `json:"address"`
+		// 	StorageKeys []string `json:"storageKeys"`
+		// }{Address: txArgs.From.Hex(), StorageKeys: []string{}})
+
+		for _, proof := range proofs[i] {
+			addr := common.HexToAddress(proof.Address)
+
+			// proof, err := c.GetProof(ctx, *header.Number, addr, entry.StorageKeys)
+			// if err != nil {
+			// 	return nil, fmt.Errorf("failed to get proof for %s: %w", addr, err)
+			// }
+
+			nonce, _ := new(big.Int).SetString(trimHexPrefix(proof.Nonce), 16)
+			balance, _ := new(big.Int).SetString(trimHexPrefix(proof.Balance), 16)
+			account := &types.StateAccount{
+				Nonce:    nonce.Uint64(),
+				Balance:  uint256.MustFromBig(balance),
+				CodeHash: common.HexToHash(proof.CodeHash).Bytes(),
+				Root:     common.HexToHash(proof.StorageHash),
+			}
+
+			statedb.SetBalance(addr, account.Balance, tracing.BalanceChangeUnspecified)
+			statedb.SetNonce(addr, account.Nonce, tracing.NonceChangeUnspecified)
+
+			code, err := c.ethClient.CodeAt(ctx, addr, header.Number)
+			if err == nil && len(code) > 0 {
+				statedb.SetCode(addr, code)
+			}
+
+			for _, sp := range proof.StorageProofs {
+				key := common.HexToHash(sp.Key)
+				val := common.HexToHash(sp.Value)
+				statedb.SetState(addr, key, val)
+			}
+		}
+	}
+
+	if statedb.IntermediateRoot(false).Hex() != header.Root.Hex() {
+		panic("statedb root mismatch")
+	} else {
+		fmt.Println("statedb root FINALLY MATCHES.... header root")
+	}
+
+	// statedb.Finalise(false)
+	// _, err = statedb.Commit(0, false, false)
+	// if err != nil {
+	// 	fmt.Println("error committing statedb", err)
+	// }
+
+	return statedb, accessListResults, nil
+}
+
+func (c *ArbitrumClient) RebuildStateRootFromDBAndProofs(ctx context.Context, msg *arbostypes.L1IncomingMessage, header *types.Header, statedb *state.StateDB, chainId uint64, accessListResults []struct {
+	AccessList []struct {
+		Address     string   `json:"address"`
+		StorageKeys []string `json:"storageKeys"`
+	} `json:"accessList"`
+}) (*state.StateDB, error) {
+	// Step 1: Parse L2 transactions
+	txs, err := arbos.ParseL2Transactions(msg, big.NewInt(int64(chainId)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse L2 transactions: %w", err)
+	}
+
+	// Step 2: Create memory DB and collect proofs
+	memdb := rawdb.NewMemoryDatabase()
+
+	for i, _ := range txs {
+		// Collect proofs and populate memdb
+		for _, entry := range accessListResults[i].AccessList {
+			addr := common.HexToAddress(entry.Address)
+
+			proof, err := c.GetProof(ctx, *header.Number, addr, entry.StorageKeys)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get proof for %s: %w", addr, err)
+			}
+
+			if !c.VerifyStateProof(header.Root, proof) {
+				return nil, fmt.Errorf("invalid proof for %s", addr)
+			}
+
+			for _, encodedNode := range proof.AccountProof {
+				nodeBytes, err := hex.DecodeString(trimHexPrefix(encodedNode))
+				if err != nil {
+					return nil, fmt.Errorf("decode account node: %w", err)
+				}
+				hash := crypto.Keccak256Hash(nodeBytes)
+				if err := memdb.Put(hash.Bytes(), nodeBytes); err != nil {
+					return nil, fmt.Errorf("put account node: %w", err)
+				}
+			}
+			for _, sp := range proof.StorageProofs {
+				for _, encodedNode := range sp.Proof {
+					nodeBytes, err := hex.DecodeString(trimHexPrefix(encodedNode))
+					if err != nil {
+						return nil, fmt.Errorf("decode storage node: %w", err)
+					}
+					hash := crypto.Keccak256Hash(nodeBytes)
+					if err := memdb.Put(hash.Bytes(), nodeBytes); err != nil {
+						return nil, fmt.Errorf("put storage node: %w", err)
+					}
+				}
+			}
+		}
+	}
+
+	// Step 3: Initialize triedb and statedb
+	tdb := triedb.NewDatabase(memdb, nil)
+	sdb := state.NewDatabase(tdb, nil)
+	statedbNew, err := state.New(header.Root, sdb)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create statedb: %w", err)
+	}
+
+	// Step 4: Apply known account and storage values
+	for i, _ := range txs {
+		for _, entry := range accessListResults[i].AccessList {
+			addr := common.HexToAddress(entry.Address)
+
+			proof, err := c.GetProof(ctx, *header.Number, addr, entry.StorageKeys)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get proof for %s: %w", addr, err)
+			}
+
+			nonce, _ := new(big.Int).SetString(trimHexPrefix(proof.Nonce), 16)
+			balance, _ := new(big.Int).SetString(trimHexPrefix(proof.Balance), 16)
+			account := &types.StateAccount{
+				Nonce:    nonce.Uint64(),
+				Balance:  uint256.MustFromBig(balance),
+				CodeHash: common.HexToHash(proof.CodeHash).Bytes(),
+				Root:     common.HexToHash(proof.StorageHash),
+			}
+
+			localNonce := statedb.GetNonce(addr)
+			localBalance := statedb.GetBalance(addr)
+			localCodeHash := statedb.GetCodeHash(addr)
+			localRoot := statedb.GetStorageRoot(addr)
+
+			if localNonce != account.Nonce {
+				fmt.Println("nonce mismatch for account", addr, localNonce, account.Nonce)
+			}
+
+			if localBalance.Cmp(account.Balance) != 0 {
+				fmt.Println("balance mismatch for account", addr, localBalance, account.Balance)
+			}
+
+			if localCodeHash.Cmp(common.BytesToHash(account.CodeHash)) != 0 {
+				fmt.Println("codeHash mismatch for account", addr, localCodeHash, account.CodeHash)
+			}
+
+			if localRoot.Cmp(account.Root) != 0 {
+				fmt.Println("root mismatch for account", addr, localRoot, account.Root)
+			}
+
+			statedbNew.SetBalance(addr, account.Balance, tracing.BalanceChangeUnspecified)
+			statedbNew.SetNonce(addr, account.Nonce, tracing.NonceChangeUnspecified)
+
+			code, err := c.ethClient.CodeAt(ctx, addr, header.Number)
+			if err == nil && len(code) > 0 {
+				statedbNew.SetCode(addr, code)
+			}
+
+			for _, sp := range proof.StorageProofs {
+				localVal := statedb.GetState(addr, common.HexToHash(sp.Key))
+				key := common.HexToHash(sp.Key)
+				val := common.HexToHash(sp.Value)
+				if localVal != val {
+					fmt.Println("key", sp.Key)
+					fmt.Println("sp.value", sp.Value)
+					fmt.Println("storage mismatch", localVal, val)
+				}
+				statedbNew.SetState(addr, key, val)
+			}
+		}
+	}
+
+	if statedbNew.IntermediateRoot(false).Hex() != header.Root.Hex() {
+		panic("statedb root mismatch")
+	}
+
+	return statedbNew, nil
+}
+
+func (c *ArbitrumClient) GetLatestState(ctx context.Context, chainId uint64) (*MessageTrackingL2Data, error) {
+	var index L1Index
+	var blockNumber uint64
+	c.rpcClient.CallContext(ctx, &index, "lightclient_getLatestIndexL1")
+
+	blockNumber, err := c.ethClient.BlockNumber(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	c.rpcClient.CallContext(ctx, &blockNumber, "eth_blockNumber")
+
+	if chainId == 42161 {
+		blockNumber -= ARBITRUM_ONE_GENESIS_BLOCK
+	}
+
+	realIndex := min(index.StateIndex-1, blockNumber)
+
+	fmt.Println("realIndex", realIndex)
+
+	block, err := c.GetBlockByNumber(ctx, big.NewInt(int64(realIndex)))
+	if err != nil {
+		return nil, err
+	}
+
+	if chainId == 42161 {
+		realIndex += ARBITRUM_ONE_GENESIS_BLOCK
+	}
+
+	return &MessageTrackingL2Data{
+		L2BlockNumber: realIndex,
+		L2BlockHash:   block.Hash(),
+	}, nil
+}
+
+func (c *ArbitrumClient) GetStateAt(ctx context.Context, blockNumber uint64, chainId uint64) MessageTrackingL2Data {
+	var data MessageTrackingL2Data
+	if chainId == 42161 {
+		blockNumber -= ARBITRUM_ONE_GENESIS_BLOCK
+	}
+	c.rpcClient.CallContext(ctx, &data, "lightclient_getStateAt", blockNumber)
+
+	return data
+}
+
+func (c *ArbitrumClient) GetFullDataAt(ctx context.Context, blockNumber uint64, chainId uint64) StateAtReturnData {
+	var data StateAtReturnData
+	if chainId == 42161 {
+		blockNumber -= ARBITRUM_ONE_GENESIS_BLOCK
+	}
+	c.rpcClient.CallContext(ctx, &data, "lightclient_getFullDataAt", blockNumber)
+
+	return data
+}
+
+func (c *ArbitrumClient) GetL1DataAt(ctx context.Context, blockNumber uint64, chainId uint64) MessageTrackingL1Data {
+	var data MessageTrackingL1Data
+	c.rpcClient.CallContext(ctx, &data, "lightclient_getL1DataAt", blockNumber)
+
+	return data
 }

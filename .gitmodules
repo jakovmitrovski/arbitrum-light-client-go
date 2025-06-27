@@ -1,6 +1,3 @@
 [submodule "nitro"]
 	path = nitro
 	url = https://github.com/jakovmitrovski/nitro.git
-[submodule "go-batchhandler"]
-	path = go-batchhandler
-	url = https://github.com/jakovmitrovski/go-batchhandler.git
