@@ -158,8 +158,6 @@ func createAccessListArgs(tx *types.Transaction, header *types.Header) Transacti
 		gas = header.GasLimit
 	}
 
-	fmt.Println("tx", tx.Type())
-
 	// TODO: this is a hack...
 	if tx.Type() == types.LegacyTxType && tx.Data() != nil {
 		gas *= 2
@@ -369,6 +367,14 @@ func (c *ArbitrumClient) GetStateDBFromProofs(ctx context.Context, msg *arbostyp
 			StorageKeys []string `json:"storageKeys"`
 		}{Address: txArgs.From.Hex(), StorageKeys: []string{}})
 
+		// Include "to" address if it exists (for value transfers)
+		if txArgs.To != nil {
+			accessListResp.AccessList = append(accessListResp.AccessList, struct {
+				Address     string   `json:"address"`
+				StorageKeys []string `json:"storageKeys"`
+			}{Address: txArgs.To.Hex(), StorageKeys: []string{}})
+		}
+
 		accessListResults[i] = accessListResp
 
 		// Collect proofs and populate memdb
@@ -414,7 +420,7 @@ func (c *ArbitrumClient) GetStateDBFromProofs(ctx context.Context, msg *arbostyp
 	// Step 3: Initialize triedb and statedb
 	tdb := triedb.NewDatabase(memdb, nil)
 	sdb := state.NewDatabase(tdb, nil)
-	statedb, err := state.New(header.Root, sdb)
+	statedb, err := state.NewDeterministic(header.Root, sdb)
 	if err != nil {
 		fmt.Println("header root: ", header.Root.Hex())
 		return nil, nil, fmt.Errorf("failed to create statedb: %w", err)
@@ -465,7 +471,7 @@ func (c *ArbitrumClient) GetStateDBFromProofs(ctx context.Context, msg *arbostyp
 		}
 	}
 
-	if statedb.IntermediateRoot(false).Hex() != header.Root.Hex() {
+	if statedb.IntermediateRoot(true).Hex() != header.Root.Hex() {
 		panic("statedb root mismatch")
 	} else {
 		fmt.Println("statedb root FINALLY MATCHES.... header root")
@@ -499,7 +505,7 @@ func (c *ArbitrumClient) RebuildStateRootFromDBAndProofs(ctx context.Context, ms
 		// Collect proofs and populate memdb
 		for _, entry := range accessListResults[i].AccessList {
 			addr := common.HexToAddress(entry.Address)
-
+			fmt.Println("addr", addr)
 			proof, err := c.GetProof(ctx, *header.Number, addr, entry.StorageKeys)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get proof for %s: %w", addr, err)
@@ -537,7 +543,7 @@ func (c *ArbitrumClient) RebuildStateRootFromDBAndProofs(ctx context.Context, ms
 	// Step 3: Initialize triedb and statedb
 	tdb := triedb.NewDatabase(memdb, nil)
 	sdb := state.NewDatabase(tdb, nil)
-	statedbNew, err := state.New(header.Root, sdb)
+	statedbNew, err := state.NewDeterministic(header.Root, sdb)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create statedb: %w", err)
 	}
@@ -629,8 +635,6 @@ func (c *ArbitrumClient) GetLatestState(ctx context.Context, chainId uint64) (*M
 
 	realIndex := min(index.StateIndex-1, blockNumber)
 
-	fmt.Println("realIndex", realIndex)
-
 	block, err := c.GetBlockByNumber(ctx, big.NewInt(int64(realIndex)))
 	if err != nil {
 		return nil, err
@@ -671,4 +675,192 @@ func (c *ArbitrumClient) GetL1DataAt(ctx context.Context, blockNumber uint64, ch
 	c.rpcClient.CallContext(ctx, &data, "lightclient_getL1DataAt", blockNumber)
 
 	return data
+}
+
+// GetModifiedAccounts gets all accounts that were modified in a specific block
+func (c *ArbitrumClient) GetModifiedAccounts(ctx context.Context, blockNumber uint64) ([]common.Address, error) {
+	var addresses []string
+	err := c.rpcClient.CallContext(ctx, &addresses, "debug_getModifiedAccountsByNumber", blockNumber, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get modified accounts: %w", err)
+	}
+
+	// Convert string addresses to common.Address
+	result := make([]common.Address, len(addresses))
+	for i, addr := range addresses {
+		result[i] = common.HexToAddress(addr)
+	}
+
+	return result, nil
+}
+
+func (c *ArbitrumClient) GetStateDBFromComprehensiveAccessList(ctx context.Context, msg *arbostypes.L1IncomingMessage, header *types.Header, chainId uint64) (*state.StateDB, error) {
+	// Step 1: Parse L2 transactions
+	txs, err := arbos.ParseL2Transactions(msg, big.NewInt(int64(chainId)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse L2 transactions: %w", err)
+	}
+
+	// Step 2: Create comprehensive access list including all affected accounts
+	allAccounts := make(map[common.Address]bool)
+	memdb := rawdb.NewMemoryDatabase()
+
+	for i, tx := range txs {
+		fmt.Printf("Processing transaction %d: %s\n", i, tx.Hash().Hex())
+
+		// Get sender address
+		from, err := types.Sender(types.LatestSignerForChainID(tx.ChainId()), tx)
+		if err != nil {
+			from = common.Address{}
+		}
+		allAccounts[from] = true
+
+		// Get "to" address if it exists (for value transfers)
+		if tx.To() != nil {
+			allAccounts[*tx.To()] = true
+		}
+
+		// Get access list from RPC
+		txArgs := createAccessListArgs(tx, header)
+		var accessListResp struct {
+			AccessList []struct {
+				Address     string   `json:"address"`
+				StorageKeys []string `json:"storageKeys"`
+			} `json:"accessList"`
+		}
+
+		err = c.rpcClient.CallContext(ctx, &accessListResp, "eth_createAccessList", txArgs, hexutil.EncodeUint64(header.Number.Uint64()))
+		if err != nil {
+			fmt.Printf("Warning: access list creation failed for tx %d: %v\n", i, err)
+			continue
+		}
+
+		// Add all addresses from access list
+		for _, entry := range accessListResp.AccessList {
+			addr := common.HexToAddress(entry.Address)
+			allAccounts[addr] = true
+		}
+	}
+
+	var accounts []common.Address
+	for addr := range allAccounts {
+		accounts = append(accounts, addr)
+	}
+
+	for _, addr := range accounts {
+		exists, err := c.AccountExists(ctx, addr, header.Number)
+		if err != nil {
+			fmt.Printf("Warning: failed to check if account %s exists: %v\n", addr.Hex(), err)
+			continue
+		}
+
+		if !exists {
+			fmt.Printf("Account %s does not exist, skipping proof\n", addr.Hex())
+			continue
+		}
+
+		proof, err := c.GetProof(ctx, *header.Number, addr, []string{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get proof for %s: %w", addr, err)
+		}
+
+		if !c.VerifyStateProof(header.Root, proof) {
+			return nil, fmt.Errorf("invalid proof for %s", addr)
+		}
+
+		for _, encodedNode := range proof.AccountProof {
+			nodeBytes, err := hex.DecodeString(trimHexPrefix(encodedNode))
+			if err != nil {
+				return nil, fmt.Errorf("decode account node: %w", err)
+			}
+			hash := crypto.Keccak256Hash(nodeBytes)
+			if err := memdb.Put(hash.Bytes(), nodeBytes); err != nil {
+				return nil, fmt.Errorf("put account node: %w", err)
+			}
+		}
+
+		for _, sp := range proof.StorageProofs {
+			for _, encodedNode := range sp.Proof {
+				nodeBytes, err := hex.DecodeString(trimHexPrefix(encodedNode))
+				if err != nil {
+					return nil, fmt.Errorf("decode storage node: %w", err)
+				}
+				hash := crypto.Keccak256Hash(nodeBytes)
+				if err := memdb.Put(hash.Bytes(), nodeBytes); err != nil {
+					return nil, fmt.Errorf("put storage node: %w", err)
+				}
+			}
+		}
+	}
+
+	tdb := triedb.NewDatabase(memdb, nil)
+	sdb := state.NewDatabase(tdb, nil)
+	statedb, err := state.NewDeterministic(header.Root, sdb)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create statedb: %w", err)
+	}
+
+	for _, addr := range accounts {
+		proof, err := c.GetProof(ctx, *header.Number, addr, []string{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get proof for %s: %w", addr, err)
+		}
+
+		nonce, _ := new(big.Int).SetString(trimHexPrefix(proof.Nonce), 16)
+		balance, _ := new(big.Int).SetString(trimHexPrefix(proof.Balance), 16)
+
+		statedb.SetBalance(addr, uint256.MustFromBig(balance), tracing.BalanceChangeUnspecified)
+		statedb.SetNonce(addr, nonce.Uint64(), tracing.NonceChangeUnspecified)
+
+		code, err := c.ethClient.CodeAt(ctx, addr, header.Number)
+		if err == nil && len(code) > 0 {
+			statedb.SetCode(addr, code)
+		}
+
+		for _, sp := range proof.StorageProofs {
+			key := common.HexToHash(sp.Key)
+			val := common.HexToHash(sp.Value)
+			statedb.SetState(addr, key, val)
+		}
+	}
+
+	if statedb.IntermediateRoot(true).Hex() != header.Root.Hex() {
+		return nil, fmt.Errorf("state root mismatch: got %s, expected %s",
+			statedb.IntermediateRoot(true).Hex(), header.Root.Hex())
+	}
+
+	return statedb, nil
+}
+
+// AccountExists checks if an account exists in the state
+func (c *ArbitrumClient) AccountExists(ctx context.Context, address common.Address, blockNumber *big.Int) (bool, error) {
+	// Try to get the account's balance - if it's 0 and nonce is 0, it might not exist
+	balance, err := c.ethClient.BalanceAt(ctx, address, blockNumber)
+	if err != nil {
+		return false, err
+	}
+
+	// If balance is 0, check nonce and code
+	if balance.Cmp(big.NewInt(0)) == 0 {
+		nonce, err := c.ethClient.NonceAt(ctx, address, blockNumber)
+		if err != nil {
+			return false, err
+		}
+
+		code, err := c.ethClient.CodeAt(ctx, address, blockNumber)
+		if err != nil {
+			return false, err
+		}
+
+		// Account exists if it has non-zero nonce or code
+		return nonce > 0 || len(code) > 0, nil
+	}
+
+	// If balance is non-zero, account definitely exists
+	return true, nil
+}
+
+// GetLazyStateDB creates a lazy-loading StateDB that automatically fetches proofs when state is accessed
+func (c *ArbitrumClient) GetLazyStateDB(ctx context.Context, header *types.Header) *LazyStateDB {
+	return NewLazyStateDB(ctx, c, header.Number, header.Root)
 }
