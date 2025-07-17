@@ -234,6 +234,9 @@ func LoadMessages(parsedSequencerMsg *sequencerMessage, delayedStart uint64, bac
 	retMessages := make([]*arbostypes.L1IncomingMessage, 0)
 	delayedPos := delayedStart
 	segments := parsedSequencerMsg.segments
+	currentTimestamp := uint64(0)
+	currentL1Block := uint64(0)
+
 	for i := 0; i < len(segments); i++ {
 		segment := segments[i]
 		kind := segment[0]
@@ -249,15 +252,14 @@ func LoadMessages(parsedSequencerMsg *sequencerMessage, delayedStart uint64, bac
 				segment = decompressed
 			}
 
-			// We don't need blockNumber and timestamp to calculate tx hash
 			msg := &arbostypes.L1IncomingMessage{
 				Header: &arbostypes.L1IncomingMessageHeader{
 					Kind:        arbostypes.L1MessageType_L2Message,
 					Poster:      l1pricing.BatchPosterAddress,
-					BlockNumber: parsedSequencerMsg.minL1Block,
-					Timestamp:   parsedSequencerMsg.minTimestamp,
-					RequestId:   nil,           // not set for regular l2 message
-					L1BaseFee:   big.NewInt(0), // not set for regular l2 message
+					BlockNumber: currentL1Block,   // Use current, not min
+					Timestamp:   currentTimestamp, // Use current, not min
+					RequestId:   nil,              // not set for regular l2 message
+					L1BaseFee:   big.NewInt(0),    // not set for regular l2 message
 				},
 				L2msg: segment,
 			}
@@ -285,12 +287,26 @@ func LoadMessages(parsedSequencerMsg *sequencerMessage, delayedStart uint64, bac
 			delayedPos += 1
 
 		} else if kind == arbstate.BatchSegmentKindAdvanceTimestamp || kind == arbstate.BatchSegmentKindAdvanceL1BlockNumber {
+			rd := bytes.NewReader(segment)
+			advancing, err := rlp.NewStream(rd, 16).Uint64()
+			if err != nil {
+				log.Warn("error parsing sequencer advancing segment", "err", err)
+				continue
+			}
+
+			// Update the current values
+			if kind == arbstate.BatchSegmentKindAdvanceTimestamp {
+				currentTimestamp += advancing
+			} else if kind == arbstate.BatchSegmentKindAdvanceL1BlockNumber {
+				currentL1Block += advancing
+			}
 			continue
 		} else {
 			log.Error("bad sequencer message segment kind", "segmentNum", i, "kind", kind)
 			return nil, nil
 		}
 	}
+
 	return retMessages, nil
 }
 
@@ -528,6 +544,6 @@ func setDelayedToBackendByIndexRange(ctx context.Context, client *ethclient.Clie
 		backend.SetDelayedMsg(pos, msg.Message)
 	}
 
-	fmt.Println("We got delayed messages: ", len(delayedMsg))
+	// fmt.Println("We got delayed messages: ", len(delayedMsg))
 	return nil
 }

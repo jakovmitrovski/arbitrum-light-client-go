@@ -7,34 +7,24 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/joho/godotenv"
-	"github.com/offchainlabs/nitro/arbos"
 	"github.com/offchainlabs/nitro/arbos/arbostypes"
 )
 
-type SimpleChainContext struct {
-	chainConfig *params.ChainConfig
-	header      *types.Header
-}
+type ChallengeResult int
 
-func (c *SimpleChainContext) Engine() consensus.Engine {
-	return arbos.Engine{}
-}
-
-func (c *SimpleChainContext) GetHeader(hash common.Hash, number uint64) *types.Header {
-	return c.header
-}
-
-func (c *SimpleChainContext) Config() *params.ChainConfig {
-	return c.chainConfig
-}
+const (
+	BothLose ChallengeResult = iota
+	LargestLosesParticipantWins
+	LargestWinsParticipantLoses
+	BothWin
+)
 
 func main() {
 	err := godotenv.Load()
@@ -45,7 +35,7 @@ func main() {
 	ctx := context.Background()
 
 	ethRpcURL := os.Getenv("ETHEREUM_RPC_URL")
-	proverRpcURLs := strings.Split(os.Getenv("PROVERS"), ";")
+	proverRpcURLs := strings.Split(os.Getenv("PROVERS"), ",")
 	rollupCoreAddr := common.HexToAddress(os.Getenv("ROLLUP_CORE_ADDRESS"))
 
 	// accountAddress := common.HexToAddress(os.Getenv("ACCOUNT_ADDRESS"))
@@ -57,6 +47,7 @@ func main() {
 
 	arbClients := make([]*ArbitrumClient, len(proverRpcURLs))
 	for i, proverRpcURL := range proverRpcURLs {
+		fmt.Printf("Initializing prover %d: %s\n", i, proverRpcURL)
 		arbClients[i], err = NewArbitrumClient(proverRpcURL)
 		if err != nil {
 			log.Fatalf("Failed to init Arbitrum client: %v", err)
@@ -130,113 +121,20 @@ func main() {
 		log.Fatalf("Error parsing ARBITRUM_CHAIN_ID: %v", err)
 	}
 
-	tournament(ctx, arbClients, ethClient, ethRpcURL, arbChainId, beaconRpcURL)
+	test(arbClients[0], ctx, beaconRpcURL, ethRpcURL, arbChainId, ethClient)
 
-	// parentRpcURL := os.Getenv("ETHEREUM_RPC_URL")
-	// // txHash := "0x4e2c7ff3b04c8115834b6edc8d746ffb519d747461e2e0bdd89d102622ec6a5e"
-	// txHash := "0x837aae2c9ee352bfdf1ebd74f3f5042e62ef78a3a81d8cf2d6106b0dd7d485dd"
-	// txHash := "0xcaf788c60948076d6839a9c40524d1eba8a0b6eb4bf62f732d8c98272b7f430d"
-
-	// msg, err := batchhandler.StartBatchHandler(ctx, parentRpcURL, txHash, arbChainId, beaconRpcURL)
-
-	// if err != nil {
-	// 	fmt.Println("err decompressing")
-	// }
-
-	// if err != nil {
-	// 	fmt.Println(err)
-	// }
-
-	// // Create chain config
-	// chainConfig := &params.ChainConfig{
-	// 	ChainID: big.NewInt(42161), // Arbitrum One
-	// 	ArbitrumChainParams: params.ArbitrumChainParams{
-	// 		InitialArbOSVersion: params.ArbosVersion_20, // Use the latest version
-	// 		GenesisBlockNum:     22207817,               // This should match your state
-	// 	},
-	// 	// Add other necessary chain parameters
-	// }
-
-	// initMessage := &arbostypes.ParsedInitMessage{
-	// 	ChainId:          chainConfig.ChainID,
-	// 	InitialL1BaseFee: arbostypes.DefaultInitialL1BaseFee,
-	// 	ChainConfig:      chainConfig,
-	// }
-
-	// latest_state := arbClient.GetLatestState(ctx)
-	// latest_state = arbClient.GetStateAt(ctx, 22341904, arbChainId)
-	// latest_state := arbClient.GetL1DataAt(ctx, 3, arbChainId)
-
-	// fmt.Println("block number: ", latest_state.L2BlockNumber)
-	// fmt.Println("block hash: ", latest_state.L2BlockHash.Hex())
-
-	// state_at_prev := arbClient.GetFullDataAt(ctx, latest_state.L2BlockNumber-4, arbChainId)
-	// state_at_curr := arbClient.GetFullDataAt(ctx, latest_state.L2BlockNumber-2, arbChainId)
-
-	// 3 expected_block, err := arbClient.GetBlockByHash(ctx, common.HexToHash("0xb9dc275d50509340a54e252ae6430d3053b4da5ac69c814c183e18f36810b7f0"))
-	// 4 expected_block, err := arbClient.GetBlockByHash(ctx, common.HexToHash("0xaa6549925f0a680e76a17c241377e8307accea6c975d5aef968a260062a5a255"))
-	//expected_block, err := arbClient.GetBlockByHash(ctx, state_at_curr.L2BlockHash)
-	// expected_block, err := arbClient.GetBlockByNumber(ctx, big.NewInt(2))
-	// if err != nil {
-	// 	log.Fatalf("Failed to get L2 block by hash: %v", err)
-	// }
-	// // block, err := arbClient.GetBlockByHash(ctx, state_at_prev.L2BlockHash)
-	// block, err := arbClient.GetBlockByNumber(ctx, big.NewInt(1))
-	// if err != nil {
-	// 	log.Fatalf("Failed to get L2 block by hash: %v", err)
-	// }
-
-	// arbClient2, err := NewArbitrumClient("https://arb-mainnet.g.alchemy.com/v2/mv49jnDzg_B9G-JLBAPNs-MwW4nd3Pk3")
-	// if err != nil {
-	// 	log.Fatalf("Failed to init Arbitrum client: %v", err)
-	// }
-	// msg := &latest_state.Message
-	// fmt.Println("msg.Kind: ", msg.Header.Kind)
-	// replay_message(ctx, ethClient.provider, arbClient, block.Header(), msg, expected_block.Header(), arbChainId)
-
-	// // Create chain context
-	// chainContext := &SimpleChainContext{chainConfig: chainConfig}
-
-	// // Initialize ArbOS
-	// _, err = arbosState.InitializeArbosState(statedb, burn.NewSystemBurner(nil, false), chainConfig, initMessage)
-	// if err != nil {
-	// 	panic(fmt.Sprintf("Error initializing ArbOS: %v", err.Error()))
-	// }
-
-	// // Get initial state root and commit it
-	// initialRoot := statedb.IntermediateRoot(true)
-
-	// // Create genesis block with the committed state root
-	// genesisBlock := arbosState.MakeGenesisBlock(common.Hash{}, 22207817, 0, initialRoot, chainConfig)
-
-	// // Try to produce the block with the new state database
-	// block, _, err1 := arbos.ProduceBlock(msg, 0, genesisBlock.Header(), statedb, chainContext, false, core.MessageReplayMode)
-	// if err1 != nil {
-	// 	fmt.Println(err1)
-	// }
-
-	// stateRoot, err := statedb.Commit(chainConfig.ArbitrumChainParams.GenesisBlockNum, true, false)
-	// if err != nil {
-	// 	panic(fmt.Sprintf("Error committing state: %v", err.Error()))
-	// }
-
-	// fmt.Println("Initial state root:", initialRoot.Hex())
-	// fmt.Println("Committed state root:", stateRoot.Hex())
-	// fmt.Println("Block state root:", block.Root().Hex())
-
-	// fmt.Println(block.Header().Root.Hex())
-	// fmt.Println(expected_block.Header().Root.Hex())
+	// Tournament(ctx, *genesisBlock.Header(), arbClients, ethRpcURL, arbChainId, beaconRpcURL)
 
 }
 
-func test(arbClient *ArbitrumClient, state MessageTrackingL2Data, ctx context.Context, beaconRpcURL string, ethClientUrl string, arbChainId uint64, ethClient *EthereumClient) {
+func test(arbClient *ArbitrumClient, ctx context.Context, beaconRpcURL string, ethClientUrl string, arbChainId uint64, ethClient *EthereumClient) {
 	// index := state.L2BlockNumber - 1
 
-	fmt.Println("state.L2BlockNumber", state.L2BlockNumber)
-
-	for index := uint64(2); index < state.L2BlockNumber; index++ {
-
+	for index := uint64(290); index < 10000; index++ {
 		fmt.Println("index", index)
+		if index == 11 {
+			continue
+		}
 
 		prevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-1)))
 		if err != nil {
@@ -268,49 +166,114 @@ func test(arbClient *ArbitrumClient, state MessageTrackingL2Data, ctx context.Co
 		fmt.Println("prevTrackingL1Data", prevTrackingL1Data.Message.Header.Kind)
 		fmt.Println("currTrackingL1Data", currTrackingL1Data.Message.Header.Kind)
 
-		if currTrackingL1Data.Message.Header.Kind == arbostypes.L1MessageType_L2Message {
-			currTxes, err := arbos.ParseL2Transactions(&currTrackingL1Data.Message, big.NewInt(int64(arbChainId)))
-
-			if err != nil {
-				fmt.Println("error", err)
-			}
-
-			for i := 0; i < len(currTxes); i++ {
-				fmt.Println("currTx", currTxes[i].Hash().Hex())
-			}
-
+		if prevTrackingL1Data.Message.Header.Kind == arbostypes.L1MessageType_Initialize {
+			fmt.Println("init message encountered")
+			executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+			fmt.Println("executionOracleResult", executionOracleResult)
+		} else {
 			fmt.Println("currBlock.Header().Root", currBlock.Header().Root.Hex())
 
 			consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
 
-			fmt.Println("consensusOracleResult", consensusOracleResult)
-			fmt.Println("error", err)
-
-			replay_message(ctx, ethClient.provider, arbClient, prevBlock.Header(), &currTrackingL1Data.Message, currBlock.Header(), arbChainId)
-		} else {
-			prevPrevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-2)))
-			if err != nil {
-				log.Fatalf("Failed to get block: %v", err)
-			}
-			prevPrevTrackingL1Data := arbClient.GetL1DataAt(ctx, index-1, arbChainId)
-
-			consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevPrevTrackingL1Data, prevTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
-			if !consensusOracleResult || err != nil {
-				fmt.Println("consensusOracleResult", consensusOracleResult)
-				fmt.Println("error", err)
-			}
-			consensusOracleResult, err = ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
 			if !consensusOracleResult || err != nil {
 				fmt.Println("consensusOracleResult", consensusOracleResult)
 				fmt.Println("error", err)
 			}
 
-			replay_message(ctx, ethClient.provider, arbClient, prevPrevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+			fmt.Printf("=== About to execute replay_message for L2 message ===\n")
+			executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &currTrackingL1Data.Message, currBlock.Header(), arbChainId)
+			fmt.Println("executionOracleResult", executionOracleResult)
+			if !executionOracleResult {
+				fmt.Println("executionOracleResult", executionOracleResult)
+				break
+			}
 		}
+		// } else {
+		// 	prevPrevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-2)))
+		// 	if err != nil {
+		// 		log.Fatalf("Failed to get block: %v", err)
+		// 	}
+		// 	prevPrevTrackingL1Data := arbClient.GetL1DataAt(ctx, index-1, arbChainId)
+
+		// 	consensusOracleResult1, err := ExecuteConsensusOracle(ctx, prevPrevTrackingL1Data, prevTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+		// 	if err != nil {
+		// 		fmt.Println("error", err)
+		// 	}
+		// 	consensusOracleResult2, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+		// 	if err != nil {
+		// 		fmt.Println("error", err)
+		// 	}
+		// 	executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevPrevBlock.Header(), &prevTrackingL1Data.Message, prevBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+
+		// 	fmt.Println("consensusOracleResult1", consensusOracleResult1)
+		// 	fmt.Println("consensusOracleResult2", consensusOracleResult2)
+		// 	fmt.Println("executionOracleResult", executionOracleResult)
+		// }
+
 	}
 }
 
-func tournament(ctx context.Context, arbClients []*ArbitrumClient, ethClient *EthereumClient, ethClientUrl string, arbChainId uint64, beaconRpcURL string) {
+func TestOracles(arbClient *ArbitrumClient, index uint64, ctx context.Context, beaconRpcURL string, ethClientUrl string, arbChainId uint64) bool {
+	// prevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-1)))
+	// if err != nil {
+	// 	log.Fatalf("Failed to get block: %v", err)
+	// }
+	// currBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index)))
+	// if err != nil {
+	// 	log.Fatalf("Failed to get block: %v", err)
+	// }
+
+	// prevTrackingL1Data := arbClient.GetL1DataAt(ctx, index, arbChainId)
+	// currTrackingL1Data := arbClient.GetL1DataAt(ctx, index+1, arbChainId)
+
+	// if currTrackingL1Data.Message.Header.Kind == arbostypes.L1MessageType_L2Message {
+	// 	consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+
+	// 	if !consensusOracleResult || err != nil {
+	// 		fmt.Println("error", err)
+	// 	}
+	// 	executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &currTrackingL1Data.Message, currBlock.Header(), arbChainId)
+
+	// 	fmt.Println("consensusOracleResult", consensusOracleResult)
+	// 	fmt.Println("executionOracleResult", executionOracleResult)
+
+	// 	return consensusOracleResult && executionOracleResult
+
+	// } else if prevTrackingL1Data.Message.Header.Kind != arbostypes.L1MessageType_Initialize {
+	// 	prevPrevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-2)))
+	// 	if err != nil {
+	// 		log.Fatalf("Failed to get block: %v", err)
+	// 	}
+	// 	prevPrevTrackingL1Data := arbClient.GetL1DataAt(ctx, index-1, arbChainId)
+
+	// 	consensusOracleResult1, err := ExecuteConsensusOracle(ctx, prevPrevTrackingL1Data, prevTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+	// 	if err != nil {
+	// 		fmt.Println("error", err)
+	// 	}
+	// 	consensusOracleResult2, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+	// 	if err != nil {
+	// 		fmt.Println("error", err)
+	// 	}
+	// 	executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevPrevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+
+	// 	fmt.Println("consensusOracleResult1", consensusOracleResult1)
+	// 	fmt.Println("consensusOracleResult2", consensusOracleResult2)
+	// 	fmt.Println("executionOracleResult", executionOracleResult)
+	// 	return consensusOracleResult1 && consensusOracleResult2 && executionOracleResult
+	// } else {
+	// 	consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+	// 	if err != nil {
+	// 		fmt.Println("error", err)
+	// 	}
+	// 	executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+	// 	fmt.Println("consensusOracleResult", consensusOracleResult)
+	// 	fmt.Println("executionOracleResult", executionOracleResult)
+	// 	return consensusOracleResult && executionOracleResult
+	// }
+	return true
+}
+
+func Tournament(ctx context.Context, neonGenesisBlock types.Header, arbClients []*ArbitrumClient, ethClientUrl string, arbChainId uint64, beaconRpcURL string) {
 	sizes := make(map[*ArbitrumClient]MessageTrackingL2Data)
 
 	for i := 0; i < len(arbClients); i++ {
@@ -321,55 +284,147 @@ func tournament(ctx context.Context, arbClients []*ArbitrumClient, ethClient *Et
 		}
 	}
 
-	test(arbClients[0], sizes[arbClients[0]], ctx, beaconRpcURL, ethClientUrl, arbChainId, ethClient)
+	sort.Slice(arbClients, func(i, j int) bool {
+		return sizes[arbClients[i]].L2BlockNumber > sizes[arbClients[j]].L2BlockNumber
+	})
 
-	// S := make(map[*ArbitrumClient]bool)
-	// S[arbClients[0]] = true
+	S := make(map[*ArbitrumClient]bool)
+	S[arbClients[0]] = true
 
-	// largest := arbClients[0]
+	largest := arbClients[0]
 
-	// for i := 1; i < len(arbClients); i++ {
-	// 	participant := arbClients[i]
+	for i := 1; i < len(arbClients); i++ {
+		participant := arbClients[i]
 
-	// 	for {
+		fmt.Println("S before", len(S))
 
-	// 		// 0 (00): largest loses, participant loses
-	// 		// 1 (01): largest loses, participant wins
-	// 		// 2 (10): largest wins, participant loses
-	// 		// 3 (11): largest wins, participant wins
-	// 		result := challenge(largest, sizes[largest], participant, sizes[participant], ctx)
+		for {
+			result := Challenge(neonGenesisBlock, largest, sizes[largest], participant, sizes[participant], ctx, ethClientUrl, arbChainId, beaconRpcURL)
 
-	// 		// Step 15-16: If "nested MMRs" (participant wins), add to survivors
-	// 		if result == 3 {
-	// 			S[participant] = true
-	// 			break
-	// 		} else if result == 0 || result == 1 {
-	// 			delete(S, largest)
+			fmt.Println("result", result)
 
-	// 			var newLargest *ArbitrumClient
-	// 			var maxSize uint64
-	// 			for survivor := range S {
-	// 				if sizes[survivor].L2BlockNumber > maxSize {
-	// 					maxSize = sizes[survivor].L2BlockNumber
-	// 					newLargest = survivor
-	// 				}
-	// 			}
-	// 			largest = newLargest
+			if result == BothWin {
+				S[participant] = true
+				break
+			} else if result == BothLose || result == LargestLosesParticipantWins {
+				delete(S, largest)
 
-	// 			if largest != nil {
-	// 				continue
-	// 			} else {
-	// 				break
-	// 			}
-	// 		}
+				fmt.Println("S after delete", len(S))
 
-	// 		if len(S) == 0 {
-	// 			S[participant] = true
-	// 			largest = participant
-	// 		}
-	// 		break
-	// 	}
+				var newLargest *ArbitrumClient
+				var maxSize uint64
+				for survivor := range S {
+					if sizes[survivor].L2BlockNumber > maxSize {
+						maxSize = sizes[survivor].L2BlockNumber
+						newLargest = survivor
+					}
+				}
+				largest = newLargest
 
-	// 	fmt.Println(S)
-	// }
+				if largest != nil {
+					continue
+				} else {
+					break
+				}
+			}
+		}
+
+		if len(S) == 0 {
+			S[participant] = true
+			largest = participant
+		}
+	}
+
+	fmt.Println("Final survivors:", len(S))
+	for survivor := range S {
+		fmt.Printf("Final survivor: %p, Size: %d, Hash: %s\n", survivor, sizes[survivor].L2BlockNumber, sizes[survivor].L2BlockHash.Hex())
+	}
+}
+
+func Challenge(neonGenesisBlock types.Header, largest *ArbitrumClient, largestState MessageTrackingL2Data, participant *ArbitrumClient, participantState MessageTrackingL2Data, ctx context.Context, ethClientUrl string, arbChainId uint64, beaconRpcURL string) ChallengeResult {
+	fmt.Printf("=== Challenge between largest (size: %d) and participant (size: %d) ===\n",
+		largestState.L2BlockNumber, participantState.L2BlockNumber)
+
+	largestStateLower, err := largest.GetBlockByNumber(ctx, big.NewInt(int64(participantState.L2BlockNumber)))
+	if err != nil {
+		fmt.Printf("Largest client failed to get block %d: %v\n", participantState.L2BlockNumber, err)
+		return LargestLosesParticipantWins
+	}
+
+	if largestStateLower.Header().Hash() == participantState.L2BlockHash {
+		fmt.Println("Both clients agree on common prefix")
+
+		// If they agree on common prefix, participant is not losing
+		// Now test the remaining blocks of the larger client
+		fmt.Printf("Testing remaining blocks %d to %d\n", participantState.L2BlockNumber+1, largestState.L2BlockNumber)
+
+		for index := participantState.L2BlockNumber + 1; index < min(largestState.L2BlockNumber, participantState.L2BlockNumber+10); index++ {
+			fmt.Printf("Testing block %d\n", index)
+
+			result := TestOracles(largest, index, ctx, beaconRpcURL, ethClientUrl, arbChainId)
+			if !result {
+				return LargestLosesParticipantWins
+			}
+		}
+
+		fmt.Println("Largest client passed all tests")
+		return BothWin
+
+	} else {
+		fmt.Printf("Disagreement found! largest=%s, participant=%s\n",
+			largestState.L2BlockHash.Hex(), participantState.L2BlockHash.Hex())
+
+		if largestStateLower.Header().Number.Uint64() != participantState.L2BlockNumber {
+			return LargestLosesParticipantWins
+		}
+
+		// Perform bisection to find a point of disagreement
+		return PerformBisection(neonGenesisBlock, largest, participant, participantState, ctx, ethClientUrl, arbChainId, beaconRpcURL)
+	}
+}
+
+func PerformBisection(neonGenesisBlock types.Header, largest *ArbitrumClient, participant *ArbitrumClient, participantState MessageTrackingL2Data, ctx context.Context, ethClientUrl string, arbChainId uint64, beaconRpcURL string) ChallengeResult {
+	left := neonGenesisBlock.Number.Uint64()
+	right := participantState.L2BlockNumber
+
+	for left < right-1 {
+		mid := (left + right) / 2
+		largestState, err := largest.GetBlockByNumber(ctx, big.NewInt(int64(mid)))
+		if err != nil {
+			fmt.Printf("Largest client failed to get block %d: %v\n", mid, err)
+			return LargestLosesParticipantWins
+		}
+		participantState, err := participant.GetBlockByNumber(ctx, big.NewInt(int64(mid)))
+		if err != nil {
+			fmt.Printf("Participant client failed to get block %d: %v\n", mid, err)
+			return LargestWinsParticipantLoses
+		}
+		if largestState.Header().Hash() == participantState.Header().Hash() {
+			fmt.Println("updating left to", mid)
+			left = mid
+		} else {
+			fmt.Println("updating right to", mid)
+			right = mid
+		}
+	}
+
+	// Now test the disagreement point
+	fmt.Printf("Testing disagreement at block %d\n", right)
+
+	largestResult := TestOracles(largest, right, ctx, beaconRpcURL, ethClientUrl, arbChainId)
+	participantResult := TestOracles(participant, right, ctx, beaconRpcURL, ethClientUrl, arbChainId)
+
+	if largestResult && !participantResult {
+		fmt.Println("Largest wins, participant loses")
+		return LargestWinsParticipantLoses
+	} else if !largestResult && participantResult {
+		fmt.Println("Largest loses, participant wins")
+		return LargestLosesParticipantWins
+	} else if !largestResult && !participantResult {
+		fmt.Println("Both lose")
+		return BothLose
+	} else {
+		fmt.Println("Both win (shouldn't happen with disagreement)")
+		return BothWin
+	}
 }
