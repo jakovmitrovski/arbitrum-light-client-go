@@ -307,10 +307,6 @@ func LoadMessages(parsedSequencerMsg *sequencerMessage, delayedStart uint64, bac
 		}
 	}
 
-	for i, msg := range retMessages {
-		fmt.Println("msg", i, msg.Header.Kind)
-	}
-
 	return retMessages, nil
 }
 
@@ -548,6 +544,6 @@ func setDelayedToBackendByIndexRange(ctx context.Context, client *ethclient.Clie
 		backend.SetDelayedMsg(pos, msg.Message)
 	}
 
-	fmt.Println("We got delayed messages: ", len(delayedMsg))
+	// fmt.Println("We got delayed messages: ", len(delayedMsg))
 	return nil
 }

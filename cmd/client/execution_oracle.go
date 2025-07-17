@@ -6,8 +6,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -53,7 +51,7 @@ func ExecuteExecutionOracle(ctx context.Context, arbClient *ArbitrumClient, last
 	if message.Header.Kind == arbostypes.L1MessageType_Initialize {
 		return handleInitializeMessage(arbClient, message, expected_block_header, extraMessages)
 	} else {
-		return handleNonInitializeMessage(ctx, arbClient, lastBlockHeader, message, expected_block_header, chainId, extraMessages)
+		return handleNonInitializeMessage(ctx, arbClient, lastBlockHeader, message, expected_block_header, chainId)
 	}
 }
 
@@ -96,6 +94,7 @@ func handleInitializeMessage(arbClient *ArbitrumClient, message *arbostypes.L1In
 
 	for i, extraMessage := range extraMessages {
 		newBlock, receipts, err = arbos.ProduceBlock(extraMessage, 0, newBlock.Header(), statedb, chainContext, false, core.MessageReplayMode)
+		fmt.Println("newBlock.Header().Root", newBlock.Header().Root.Hex())
 		if err != nil {
 			panic(fmt.Sprintf("Error producing block: %v", err.Error()))
 		}
@@ -111,67 +110,67 @@ func handleInitializeMessage(arbClient *ArbitrumClient, message *arbostypes.L1In
 	return validateBlockHeaders(newBlock.Header(), expected_block_header)
 }
 
-func handleNonInitializeMessage(ctx context.Context, arbClient *ArbitrumClient, lastBlockHeader *types.Header, message *arbostypes.L1IncomingMessage, expected_block_header *types.Header, chainId uint64, extraMessages []*arbostypes.L1IncomingMessage) bool {
+func handleNonInitializeMessage(ctx context.Context, arbClient *ArbitrumClient, lastBlockHeader *types.Header, message *arbostypes.L1IncomingMessage, expected_block_header *types.Header, chainId uint64) bool {
 	fmt.Println("lastBlockHeader.Root", lastBlockHeader.Root.Hex())
 	fmt.Println("expected_block_header.Root", expected_block_header.Root.Hex())
 
-	statedb, err := arbClient.GetStateDBFromComprehensiveAccessList(ctx, message, lastBlockHeader, chainId)
+	// statedb, err := arbClient.GetStateDBFromComprehensiveAccessList(ctx, message, lastBlockHeader, chainId)
+	statedb, _, _, err := arbClient.ReconstructStateFromProofsAndTrace(ctx, expected_block_header, lastBlockHeader, chainId)
+	// statedb, err := arbClient.GetStateDBFromProofsAndTraceReconciliation(ctx, expected_block_header, lastBlockHeader, chainId)
 	if err != nil {
 		panic(fmt.Sprintf("Error opening state db: %v", err.Error()))
 	}
 
+	// Debug: Check initial state root
+	initialRoot := statedb.IntermediateRoot(true)
+	fmt.Printf("Initial state root: %s\n", initialRoot.Hex())
+
+	// Debug: Check if the state root matches the previous block
+	if initialRoot != lastBlockHeader.Root {
+		fmt.Printf("WARNING: Initial state root (%s) does not match last block root (%s)\n",
+			initialRoot.Hex(), lastBlockHeader.Root.Hex())
+	} else {
+		fmt.Printf("✅ Initial state root matches last block root\n")
+	}
+
 	chainConfig := chaininfo.ArbitrumDevTestChainConfig()
-	chainConfig.ArbitrumChainParams.InitialArbOSVersion = binary.BigEndian.Uint64(expected_block_header.MixDigest.Bytes()[16:24])
+	// chainConfig.ArbitrumChainParams.InitialArbOSVersion = binary.BigEndian.Uint64(expected_block_header.MixDigest.Bytes()[16:24])
 
-	initMessage := &arbostypes.ParsedInitMessage{
-		ChainId:          chainConfig.ChainID,
-		InitialL1BaseFee: expected_block_header.BaseFee,
-		ChainConfig:      chainConfig,
-	}
-
-	_, err = arbosState.InitializeArbosState(statedb, burn.NewSystemBurner(nil, false), chainConfig, initMessage)
-	if err != nil {
-		panic(fmt.Sprintf("Error initializing ArbOS: %v", err.Error()))
-	}
-
-	_ = arbosState.MakeGenesisBlock(lastBlockHeader.ParentHash, lastBlockHeader.Number.Uint64(), lastBlockHeader.Time, statedb.IntermediateRoot(true), chainConfig)
+	_ = arbosState.MakeGenesisBlock(lastBlockHeader.ParentHash, lastBlockHeader.Number.Uint64(), lastBlockHeader.Time, statedb.IntermediateRoot(false), chainConfig)
 	chainContext := &SimpleChainContext{chainConfig: chainConfig, client: arbClient}
 
 	newBlock, receipts, err := arbos.ProduceBlock(message, 0, lastBlockHeader, statedb, chainContext, false, core.MessageReplayMode)
 	if err != nil {
-		fmt.Printf("Error producing block: %v\n", err.Error())
-		panic(fmt.Sprintf("Error producing block: %v", err.Error()))
+		fmt.Printf("Failed to produce block: %v\n", err)
+		return false
 	}
 
+	// Debug: Check final state root
+	finalRoot := statedb.IntermediateRoot(true)
+	fmt.Printf("Final state root after message: %s\n", finalRoot.Hex())
+	fmt.Printf("New block root: %s\n", newBlock.Root().Hex())
+	fmt.Printf("Expected block root: %s\n", expected_block_header.Root.Hex())
+
+	// Debug: Print receipt information
+	fmt.Printf("Number of receipts: %d\n", len(receipts))
 	for _, receipt := range receipts {
-		fmt.Println("receipt", receipt.TxHash, receipt.Status)
+		fmt.Printf("receipt %s %d\n", receipt.TxHash.Hex(), receipt.Status)
 	}
 
-	for i, extraMessage := range extraMessages {
-		newBlock, receipts, err = arbos.ProduceBlock(extraMessage, 0, newBlock.Header(), statedb, chainContext, false, core.MessageReplayMode)
-		if err != nil {
-			panic(fmt.Sprintf("Error producing block: %v", err.Error()))
-		}
-		fmt.Println("FOR LOOP SOLVING....")
+	//arbClient.InspectAccountStorage(statedb, common.HexToAddress("0xA4b05FffffFffFFFFfFFfffFfffFFfffFfFfFFFf"))
+	// Then find all differences to see what's missing
+	// fmt.Printf("🔍 Finding all state differences...\n")
+	// arbClient.FindStateDifferences(ctx, statedb, accountSet, expected_block_header)
 
-		if i == len(extraMessages)-1 {
-			for _, receipt := range receipts {
-				fmt.Println("receipt", receipt.TxHash, receipt.Status)
-			}
-		}
-	}
+	// First verify the accounts/slots from trace
+	// arbClient.VerifyStateAgainstProofs(ctx, statedb, accountSet, slotSet, expected_block_header)
+
+	// arbClient.DiagnoseArbOSStorageMismatch(ctx, statedb, expected_block_header)
 
 	return validateBlockHeaders(newBlock.Header(), expected_block_header)
 }
 
 func validateBlockHeaders(actual *types.Header, expected *types.Header) bool {
-	if actual.Root != expected.Root {
-		fmt.Println("root equality failed")
-		fmt.Println("actual.Root", actual.Root.Hex())
-		fmt.Println("expected.Root", expected.Root.Hex())
-		return false
-	}
-
 	if actual.ReceiptHash != expected.ReceiptHash {
 		fmt.Println("receipt hash equality failed")
 		fmt.Println("actual.ReceiptHash", actual.ReceiptHash.Hex())
@@ -200,58 +199,12 @@ func validateBlockHeaders(actual *types.Header, expected *types.Header) bool {
 		return false
 	}
 
+	if actual.Root != expected.Root {
+		fmt.Println("root equality failed")
+		fmt.Println("actual.Root", actual.Root.Hex())
+		fmt.Println("expected.Root", expected.Root.Hex())
+		return false
+	}
+
 	return true
-}
-
-func debugStateDBContents(statedb *state.StateDB) {
-	fmt.Printf("=== State DB Contents ===\n")
-
-	if statedb == nil {
-		fmt.Printf("StateDB is nil!\n")
-		return
-	}
-
-	// Check the trie
-	trie := statedb.GetTrie()
-	if trie == nil {
-		fmt.Printf("Trie is nil!\n")
-	} else {
-		fmt.Printf("Trie hash: %s\n", trie.Hash().Hex())
-	}
-
-	// Check if there are pending changes
-	fmt.Printf("Has pending changes: %t\n", statedb.HasSelfDestructed(common.Address{})) // This checks if there are any pending changes
-
-	// Try to get account data for known addresses
-	testAddresses := []common.Address{
-		common.HexToAddress("0x2EB27d9F51D90C45ea735eE3b68E9BE4AE2aB61f"),
-		common.HexToAddress("0xC3c76AaAA7C483c5099aeC225bA5E4269373F16b"),
-		// Add other addresses you know should exist
-	}
-
-	for _, addr := range testAddresses {
-		balance := statedb.GetBalance(addr)
-		nonce := statedb.GetNonce(addr)
-		codeHash := statedb.GetCodeHash(addr)
-		storageRoot := statedb.GetStorageRoot(addr)
-
-		fmt.Printf("Account %s:\n", addr.Hex())
-		fmt.Printf("  Balance: %s\n", balance.String())
-		fmt.Printf("  Nonce: %d\n", nonce)
-		fmt.Printf("  CodeHash: %s\n", codeHash.Hex())
-		fmt.Printf("  StorageRoot: %s\n", storageRoot.Hex())
-		fmt.Printf("  Code: %s\n", hex.EncodeToString(statedb.GetCode(addr)))
-		fmt.Printf("  Exists: %t\n", statedb.Exist(addr))
-	}
-
-	// Dump BEFORE finalizing and committing
-	fmt.Println("json", statedb.Dump(nil))
-
-	// Check the intermediate root
-	root := statedb.IntermediateRoot(false)
-
-	// Only finalize and commit AFTER dumping
-	statedb.Finalise(false)
-	statedb.Commit(0, false, false)
-	fmt.Printf("Intermediate root: %s\n", root.Hex())
 }

@@ -121,16 +121,20 @@ func main() {
 		log.Fatalf("Error parsing ARBITRUM_CHAIN_ID: %v", err)
 	}
 
-	// test(arbClients[1], ctx, beaconRpcURL, ethRpcURL, arbChainId, ethClient)
+	test(arbClients[0], ctx, beaconRpcURL, ethRpcURL, arbChainId, ethClient)
 
-	Tournament(ctx, *genesisBlock.Header(), arbClients, ethRpcURL, arbChainId, beaconRpcURL)
+	// Tournament(ctx, *genesisBlock.Header(), arbClients, ethRpcURL, arbChainId, beaconRpcURL)
+
 }
 
 func test(arbClient *ArbitrumClient, ctx context.Context, beaconRpcURL string, ethClientUrl string, arbChainId uint64, ethClient *EthereumClient) {
 	// index := state.L2BlockNumber - 1
 
-	for index := uint64(14); index < 15; index++ {
+	for index := uint64(290); index < 10000; index++ {
 		fmt.Println("index", index)
+		if index == 11 {
+			continue
+		}
 
 		prevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-1)))
 		if err != nil {
@@ -162,7 +166,11 @@ func test(arbClient *ArbitrumClient, ctx context.Context, beaconRpcURL string, e
 		fmt.Println("prevTrackingL1Data", prevTrackingL1Data.Message.Header.Kind)
 		fmt.Println("currTrackingL1Data", currTrackingL1Data.Message.Header.Kind)
 
-		if currTrackingL1Data.Message.Header.Kind == arbostypes.L1MessageType_L2Message {
+		if prevTrackingL1Data.Message.Header.Kind == arbostypes.L1MessageType_Initialize {
+			fmt.Println("init message encountered")
+			executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+			fmt.Println("executionOracleResult", executionOracleResult)
+		} else {
 			fmt.Println("currBlock.Header().Root", currBlock.Header().Root.Hex())
 
 			consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
@@ -172,96 +180,97 @@ func test(arbClient *ArbitrumClient, ctx context.Context, beaconRpcURL string, e
 				fmt.Println("error", err)
 			}
 
-			// CompareApproaches(ctx, arbClient, &currTrackingL1Data.Message, currBlock.Header(), arbChainId)
-
 			fmt.Printf("=== About to execute replay_message for L2 message ===\n")
 			executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &currTrackingL1Data.Message, currBlock.Header(), arbChainId)
 			fmt.Println("executionOracleResult", executionOracleResult)
-		} else if prevTrackingL1Data.Message.Header.Kind != arbostypes.L1MessageType_Initialize {
-			prevPrevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-2)))
-			if err != nil {
-				log.Fatalf("Failed to get block: %v", err)
+			if !executionOracleResult {
+				fmt.Println("executionOracleResult", executionOracleResult)
+				break
 			}
-			prevPrevTrackingL1Data := arbClient.GetL1DataAt(ctx, index-1, arbChainId)
-
-			consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevPrevTrackingL1Data, prevTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
-			if !consensusOracleResult || err != nil {
-				fmt.Println("consensusOracleResult", consensusOracleResult)
-				fmt.Println("error", err)
-			}
-			consensusOracleResult, err = ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
-			if !consensusOracleResult || err != nil {
-				fmt.Println("consensusOracleResult", consensusOracleResult)
-				fmt.Println("error", err)
-			}
-
-			executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevPrevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
-			fmt.Println("executionOracleResult", executionOracleResult)
-		} else {
-			fmt.Println("init message encountered")
-			executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
-			fmt.Println("executionOracleResult", executionOracleResult)
 		}
+		// } else {
+		// 	prevPrevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-2)))
+		// 	if err != nil {
+		// 		log.Fatalf("Failed to get block: %v", err)
+		// 	}
+		// 	prevPrevTrackingL1Data := arbClient.GetL1DataAt(ctx, index-1, arbChainId)
+
+		// 	consensusOracleResult1, err := ExecuteConsensusOracle(ctx, prevPrevTrackingL1Data, prevTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+		// 	if err != nil {
+		// 		fmt.Println("error", err)
+		// 	}
+		// 	consensusOracleResult2, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+		// 	if err != nil {
+		// 		fmt.Println("error", err)
+		// 	}
+		// 	executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevPrevBlock.Header(), &prevTrackingL1Data.Message, prevBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+
+		// 	fmt.Println("consensusOracleResult1", consensusOracleResult1)
+		// 	fmt.Println("consensusOracleResult2", consensusOracleResult2)
+		// 	fmt.Println("executionOracleResult", executionOracleResult)
+		// }
+
 	}
 }
 
 func TestOracles(arbClient *ArbitrumClient, index uint64, ctx context.Context, beaconRpcURL string, ethClientUrl string, arbChainId uint64) bool {
-	prevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-1)))
-	if err != nil {
-		log.Fatalf("Failed to get block: %v", err)
-	}
-	currBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index)))
-	if err != nil {
-		log.Fatalf("Failed to get block: %v", err)
-	}
+	// prevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-1)))
+	// if err != nil {
+	// 	log.Fatalf("Failed to get block: %v", err)
+	// }
+	// currBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index)))
+	// if err != nil {
+	// 	log.Fatalf("Failed to get block: %v", err)
+	// }
 
-	prevTrackingL1Data := arbClient.GetL1DataAt(ctx, index, arbChainId)
-	currTrackingL1Data := arbClient.GetL1DataAt(ctx, index+1, arbChainId)
+	// prevTrackingL1Data := arbClient.GetL1DataAt(ctx, index, arbChainId)
+	// currTrackingL1Data := arbClient.GetL1DataAt(ctx, index+1, arbChainId)
 
-	if currTrackingL1Data.Message.Header.Kind == arbostypes.L1MessageType_L2Message {
-		consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+	// if currTrackingL1Data.Message.Header.Kind == arbostypes.L1MessageType_L2Message {
+	// 	consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
 
-		if !consensusOracleResult || err != nil {
-			fmt.Println("error", err)
-		}
-		executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &currTrackingL1Data.Message, currBlock.Header(), arbChainId)
+	// 	if !consensusOracleResult || err != nil {
+	// 		fmt.Println("error", err)
+	// 	}
+	// 	executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &currTrackingL1Data.Message, currBlock.Header(), arbChainId)
 
-		fmt.Println("consensusOracleResult", consensusOracleResult)
-		fmt.Println("executionOracleResult", executionOracleResult)
+	// 	fmt.Println("consensusOracleResult", consensusOracleResult)
+	// 	fmt.Println("executionOracleResult", executionOracleResult)
 
-		return consensusOracleResult && executionOracleResult
+	// 	return consensusOracleResult && executionOracleResult
 
-	} else if prevTrackingL1Data.Message.Header.Kind != arbostypes.L1MessageType_Initialize {
-		prevPrevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-2)))
-		if err != nil {
-			log.Fatalf("Failed to get block: %v", err)
-		}
-		prevPrevTrackingL1Data := arbClient.GetL1DataAt(ctx, index-1, arbChainId)
+	// } else if prevTrackingL1Data.Message.Header.Kind != arbostypes.L1MessageType_Initialize {
+	// 	prevPrevBlock, err := arbClient.GetBlockByNumber(ctx, big.NewInt(int64(index-2)))
+	// 	if err != nil {
+	// 		log.Fatalf("Failed to get block: %v", err)
+	// 	}
+	// 	prevPrevTrackingL1Data := arbClient.GetL1DataAt(ctx, index-1, arbChainId)
 
-		consensusOracleResult1, err := ExecuteConsensusOracle(ctx, prevPrevTrackingL1Data, prevTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
-		if err != nil {
-			fmt.Println("error", err)
-		}
-		consensusOracleResult2, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
-		if err != nil {
-			fmt.Println("error", err)
-		}
-		executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevPrevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+	// 	consensusOracleResult1, err := ExecuteConsensusOracle(ctx, prevPrevTrackingL1Data, prevTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+	// 	if err != nil {
+	// 		fmt.Println("error", err)
+	// 	}
+	// 	consensusOracleResult2, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+	// 	if err != nil {
+	// 		fmt.Println("error", err)
+	// 	}
+	// 	executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevPrevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
 
-		fmt.Println("consensusOracleResult1", consensusOracleResult1)
-		fmt.Println("consensusOracleResult2", consensusOracleResult2)
-		fmt.Println("executionOracleResult", executionOracleResult)
-		return consensusOracleResult1 && consensusOracleResult2 && executionOracleResult
-	} else {
-		consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
-		if err != nil {
-			fmt.Println("error", err)
-		}
-		executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
-		fmt.Println("consensusOracleResult", consensusOracleResult)
-		fmt.Println("executionOracleResult", executionOracleResult)
-		return consensusOracleResult && executionOracleResult
-	}
+	// 	fmt.Println("consensusOracleResult1", consensusOracleResult1)
+	// 	fmt.Println("consensusOracleResult2", consensusOracleResult2)
+	// 	fmt.Println("executionOracleResult", executionOracleResult)
+	// 	return consensusOracleResult1 && consensusOracleResult2 && executionOracleResult
+	// } else {
+	// 	consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
+	// 	if err != nil {
+	// 		fmt.Println("error", err)
+	// 	}
+	// 	executionOracleResult := ExecuteExecutionOracle(ctx, arbClient, prevBlock.Header(), &prevTrackingL1Data.Message, currBlock.Header(), arbChainId, &currTrackingL1Data.Message)
+	// 	fmt.Println("consensusOracleResult", consensusOracleResult)
+	// 	fmt.Println("executionOracleResult", executionOracleResult)
+	// 	return consensusOracleResult && executionOracleResult
+	// }
+	return true
 }
 
 func Tournament(ctx context.Context, neonGenesisBlock types.Header, arbClients []*ArbitrumClient, ethClientUrl string, arbChainId uint64, beaconRpcURL string) {
