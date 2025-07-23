@@ -50,7 +50,6 @@ func ExecuteConsensusOracle(ctx context.Context, prevL1Data MessageTrackingL1Dat
 		}
 
 		for i := 0; i < len(messages); i++ {
-
 			if getSha256(messages[i].L2msg) == getSha256(prevL1Data.Message.L2msg) && getSha256(messages[i+1].L2msg) == getSha256(currL1Data.Message.L2msg) {
 				return true, nil
 			}
@@ -216,7 +215,7 @@ func StartBatchHandler(ctx context.Context, L1Data MessageTrackingL1Data, parent
 		return nil, 0, err
 	}
 
-	messages, err := LoadMessages(parsedSequencerMsg, lastBatchDelayedCount, backend)
+	messages, err := LoadMessages(parsedSequencerMsg, lastBatchDelayedCount, backend, config.ChildChainId)
 
 	return messages, targetBatchNum, nil
 

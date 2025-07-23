@@ -317,8 +317,9 @@ func (c *ArbitrumClient) GetFullDataAt(ctx context.Context, blockNumber uint64, 
 
 func (c *ArbitrumClient) GetL1DataAt(ctx context.Context, blockNumber uint64, chainId uint64) MessageTrackingL1Data {
 	var data MessageTrackingL1Data
-	c.rpcClient.CallContext(ctx, &data, "lightclient_getL1DataAt", blockNumber)
 
+	fmt.Println("blockNumber", blockNumber)
+	c.rpcClient.CallContext(ctx, &data, "lightclient_getL1DataAt", blockNumber)
 	return data
 }
 
@@ -362,9 +363,6 @@ func (c *ArbitrumClient) ReconstructStateFromProofsAndTrace(ctx context.Context,
 			}
 
 			addr := common.HexToAddress(addrStr)
-			if addr == common.HexToAddress("0x00000000000000000000000000000000000a4b05") {
-				continue
-			}
 			allAccounts[addr] = true
 
 			if allStorageKeys[addr] == nil {
@@ -383,6 +381,7 @@ func (c *ArbitrumClient) ReconstructStateFromProofsAndTrace(ctx context.Context,
 	}
 
 	knownAccounts := []common.Address{
+		common.HexToAddress("0x00000000000000000000000000000000000A4B05"), // ArbOS
 		common.HexToAddress("0x5E1497dD1f08C87b2d8FE23e9AAB6c1De833D927"), // local
 		common.HexToAddress("0xE6841D92B0C345144506576eC13ECf5103aC7f49"), // arb1 and nova
 		common.HexToAddress("0x6EC62D826aDc24AeA360be9cF2647c42b9Cdb19b"), // sepolia
@@ -404,6 +403,11 @@ func (c *ArbitrumClient) ReconstructStateFromProofsAndTrace(ctx context.Context,
 		common.HexToAddress("0xc8"), // NodeInterfaceAddress
 		common.HexToAddress("0xc9"), // NodeInterfaceDebugAddress
 		common.HexToAddress("0xff"), // ArbDebugAddress
+		// extra
+		// common.HexToAddress("0x000000000005BaC754a50d9f3867F49C00c3B07b"),
+		// common.HexToAddress("0x000000000001467a230D332f218187FFAfb8Ec0f"),
+		// common.HexToAddress("0x0000F90827F1C53a10cb7A02335B175320002935"),
+		// common.HexToAddress("0xFF162c694eAA571f685030649814282eA457f169"),
 	}
 
 	for _, addr := range knownAccounts {
@@ -518,14 +522,10 @@ func (c *ArbitrumClient) ReconstructStateFromProofsAndTrace(ctx context.Context,
 
 	// Verify the state root from proofs matches the previous block's root
 	computedRootFromProofs := statedb.IntermediateRoot(false)
-	fmt.Printf("🔍 State root from proofs: %s\n", computedRootFromProofs.Hex())
-	fmt.Printf("🔍 Expected state root: %s\n", previousHeader.Root.Hex())
 
 	if computedRootFromProofs.Hex() != previousHeader.Root.Hex() {
 		return nil, nil, nil, fmt.Errorf("state root from proofs mismatch: got %s, expected %s", computedRootFromProofs.Hex(), previousHeader.Root.Hex())
 	}
-
-	fmt.Printf("✅ State reconstruction from proofs successful!\n")
 
 	accountSet := make(map[common.Address]struct{})
 	slotSet := make(map[common.Address]map[common.Hash]struct{})
@@ -555,16 +555,18 @@ func (c *ArbitrumClient) VerifyStateAgainstProofs(ctx context.Context, statedb *
 		return fmt.Errorf("failed to reconstruct state from proofs and trace: %w", err)
 	}
 
+	// statedb.CreateAccount(common.HexToAddress("0x00000000000000000000000000000000000A4B05"))
+
 	// c.InspectRawStorage(statedb, common.HexToAddress("0xa4b05fffffffffffffffffffffffffffffffffff"))
 
 	// fmt.Printf("🔍 Code: %s\n", common.Bytes2Hex(statedb.GetCode(common.HexToAddress("0x217788c286797d56cd59af5e493f3699c39cbbe8"))))
 	// fmt.Printf("🔍 Code2: %s\n", common.Bytes2Hex(statedb2.GetCode(common.HexToAddress("0x217788c286797d56cd59af5e493f3699c39cbbe8"))))
-	fmt.Printf("nonce: %d\n", statedb.GetNonce(common.HexToAddress("0x5e1497dd1f08c87b2d8fe23e9aab6c1de833d927")))
+	// fmt.Printf("nonce: %d\n", statedb.GetNonce(common.HexToAddress("0x5e1497dd1f08c87b2d8fe23e9aab6c1de833d927")))
 
 	// statedb2.GetTrie().DeleteAccount(common.HexToAddress("0xa4b05fffffffffffffffffffffffffffffffffff"))
 	// statedb.GetTrie().DeleteAccount(common.HexToAddress("0xa4b05fffffffffffffffffffffffffffffffffff"))
 
-	statedb.CreateAccount(common.HexToAddress("0x00000000000000000000000000000000000A4B05"))
+	// statedb.CreateAccount(common.HexToAddress("0x00000000000000000000000000000000000A4B05"))
 
 	// statedb.SetState(common.HexToAddress("0xa4b05fffffffffffffffffffffffffffffffffff"), common.HexToHash("0x025266682f3ac65a3b6bc07305bb1e428cbeaadd15c7f73f96f1ca4a39565c3f"), common.HexToHash("0xa1a146487afd08fb987bdb501c6ed5aa5d1e9683e49b32cdcd6e698bd6fcfa71"))
 	// statedb.SetState(common.HexToAddress("0xa4b05fffffffffffffffffffffffffffffffffff"), common.HexToHash("03a678782b54156f2309f89e817a2e1943175a99f9869827dcf7ef08d209f623"), common.HexToHash("0x8fdc9957817f2ffda7cc4ee10dcd68e49f1c9908a45cc92204e4065e590c4fa0"))
@@ -592,6 +594,7 @@ func (c *ArbitrumClient) FindStateDifferences(ctx context.Context, statedb *stat
 	}
 
 	fmt.Printf("📊 Local state has %d accounts\n", len(localAccounts))
+	// statedb.CreateAccount(common.HexToAddress("0x00000000000000000000000000000000000A4B05"))
 
 	// Check each local account against the expected block
 	for addr := range localAccounts {

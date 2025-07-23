@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -122,7 +123,7 @@ func handleNonInitializeMessage(ctx context.Context, arbClient *ArbitrumClient, 
 	}
 
 	// Debug: Check initial state root
-	initialRoot := statedb.IntermediateRoot(true)
+	initialRoot := statedb.IntermediateRoot(false)
 	fmt.Printf("Initial state root: %s\n", initialRoot.Hex())
 
 	// Debug: Check if the state root matches the previous block
@@ -134,10 +135,15 @@ func handleNonInitializeMessage(ctx context.Context, arbClient *ArbitrumClient, 
 	}
 
 	chainConfig := chaininfo.ArbitrumDevTestChainConfig()
-	// chainConfig.ArbitrumChainParams.InitialArbOSVersion = binary.BigEndian.Uint64(expected_block_header.MixDigest.Bytes()[16:24])
+	// chainConfig := chaininfo.ArbitrumOneChainConfig()
 
 	_ = arbosState.MakeGenesisBlock(lastBlockHeader.ParentHash, lastBlockHeader.Number.Uint64(), lastBlockHeader.Time, statedb.IntermediateRoot(false), chainConfig)
 	chainContext := &SimpleChainContext{chainConfig: chainConfig, client: arbClient}
+
+	txs, _ := arbos.ParseL2Transactions(message, big.NewInt(int64(chainId)))
+	for _, tx := range txs {
+		fmt.Println("tx", tx.Hash().Hex())
+	}
 
 	newBlock, receipts, err := arbos.ProduceBlock(message, 0, lastBlockHeader, statedb, chainContext, false, core.MessageReplayMode)
 	if err != nil {
@@ -146,8 +152,6 @@ func handleNonInitializeMessage(ctx context.Context, arbClient *ArbitrumClient, 
 	}
 
 	// Debug: Check final state root
-	finalRoot := statedb.IntermediateRoot(true)
-	fmt.Printf("Final state root after message: %s\n", finalRoot.Hex())
 	fmt.Printf("New block root: %s\n", newBlock.Root().Hex())
 	fmt.Printf("Expected block root: %s\n", expected_block_header.Root.Hex())
 
@@ -203,6 +207,17 @@ func validateBlockHeaders(actual *types.Header, expected *types.Header) bool {
 		fmt.Println("root equality failed")
 		fmt.Println("actual.Root", actual.Root.Hex())
 		fmt.Println("expected.Root", expected.Root.Hex())
+		return false
+	}
+
+	if actual.Nonce != expected.Nonce {
+		actual.Nonce = expected.Nonce
+	}
+
+	if actual.Hash() != expected.Hash() {
+		fmt.Println("hash equality failed")
+		fmt.Println("actual.Hash", actual.Hash().Hex())
+		fmt.Println("expected.Hash", expected.Hash().Hex())
 		return false
 	}
 
