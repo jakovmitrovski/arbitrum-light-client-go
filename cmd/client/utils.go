@@ -162,75 +162,7 @@ func ParseSequencerMessage(ctx context.Context, batchNum uint64, batchBlockHash 
 	return parsedMsg, nil
 }
 
-func getTxHash(parsedSequencerMsg *sequencerMessage, delayedStart uint64, backend *MultiplexerBackend) (txes types.Transactions, err error) {
-	txHashes := make(types.Transactions, 0)
-	delayedPos := delayedStart
-	segments := parsedSequencerMsg.segments
-	for i := 0; i < len(segments); i++ {
-		segment := segments[i]
-		kind := segment[0]
-		segment = segment[1:]
-		if kind == arbstate.BatchSegmentKindL2Message || kind == arbstate.BatchSegmentKindL2MessageBrotli {
-
-			if kind == arbstate.BatchSegmentKindL2MessageBrotli {
-				decompressed, err := arbcompress.Decompress(segment, arbostypes.MaxL2MessageSize)
-				if err != nil {
-					log.Info("dropping compressed message", "err", err, "delayedMsg")
-					return nil, err
-				}
-				segment = decompressed
-			}
-
-			// We don't need blockNumber and timestamp to calculate tx hash
-			msg := &arbostypes.L1IncomingMessage{
-				Header: &arbostypes.L1IncomingMessageHeader{
-					Kind:        arbostypes.L1MessageType_L2Message,
-					Poster:      l1pricing.BatchPosterAddress,
-					BlockNumber: parsedSequencerMsg.minL1Block,   // TODO: check if this is correct
-					Timestamp:   parsedSequencerMsg.minTimestamp, // TODO: check if this is correct
-					RequestId:   nil,                             // not set for regular l2 message
-					L1BaseFee:   big.NewInt(0),                   // not set for regular l2 message
-				},
-				L2msg: segment,
-			}
-
-			txHash, err := arbos.ParseL2Transactions(msg, big.NewInt(42161))
-			if err != nil {
-				return nil, err
-			}
-			txHashes = append(txHashes, txHash...)
-		} else if kind == arbstate.BatchSegmentKindDelayedMessages {
-			delayed, realErr := backend.ReadDelayedInbox(delayedPos)
-			if realErr != nil {
-				return nil, realErr
-			}
-			if delayed == nil {
-				delayedPos += 1
-				// Todo
-				continue
-			}
-
-			txHash, err := arbos.ParseL2Transactions(delayed, big.NewInt(42161))
-			if err != nil {
-				delayedPos += 1
-				// Todo: if tx is BatchPostingReportMessage, use current way will be failed
-				continue
-			}
-			txHashes = append(txHashes, txHash...)
-
-			delayedPos += 1
-
-		} else if kind == arbstate.BatchSegmentKindAdvanceTimestamp || kind == arbstate.BatchSegmentKindAdvanceL1BlockNumber {
-			continue
-		} else {
-			log.Error("bad sequencer message segment kind", "segmentNum", i, "kind", kind)
-			return nil, nil
-		}
-	}
-	return txHashes, nil
-}
-
-func LoadMessages(parsedSequencerMsg *sequencerMessage, delayedStart uint64, backend *MultiplexerBackend) (messages []*arbostypes.L1IncomingMessage, err error) {
+func LoadMessages(parsedSequencerMsg *sequencerMessage, delayedStart uint64, backend *MultiplexerBackend, chainId uint64) (messages []*arbostypes.L1IncomingMessage, err error) {
 	retMessages := make([]*arbostypes.L1IncomingMessage, 0)
 	delayedPos := delayedStart
 	segments := parsedSequencerMsg.segments
@@ -276,7 +208,7 @@ func LoadMessages(parsedSequencerMsg *sequencerMessage, delayedStart uint64, bac
 				continue
 			}
 
-			_, err := arbos.ParseL2Transactions(delayed, big.NewInt(412346))
+			_, err := arbos.ParseL2Transactions(delayed, big.NewInt(int64(chainId)))
 			if err != nil {
 				delayedPos += 1
 				// Todo: if tx is BatchPostingReportMessage, use current way will be failed

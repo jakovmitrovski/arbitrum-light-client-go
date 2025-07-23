@@ -66,7 +66,7 @@ func (ec *EthereumClient) getAssertionLog(ctx context.Context, topic common.Hash
 
 	for log == nil {
 		query := ethereum.FilterQuery{
-			FromBlock: big.NewInt(int64(latestBlock - 499)),
+			FromBlock: big.NewInt(int64(latestBlock - 1499)),
 			ToBlock:   big.NewInt(int64(latestBlock)),
 			Addresses: []common.Address{ec.contractAddr},
 			Topics: [][]common.Hash{
@@ -77,12 +77,12 @@ func (ec *EthereumClient) getAssertionLog(ctx context.Context, topic common.Hash
 
 		logs, err := ec.provider.FilterLogs(ctx, query)
 		if err != nil {
-			latestBlock -= 499
+			latestBlock -= 1499
 			continue
 			// return nil, err
 		}
 		if len(logs) == 0 {
-			latestBlock -= 499
+			latestBlock -= 1499
 			continue
 			// return nil, fmt.Errorf("no logs found for topic %s", topic.Hex())
 		}
@@ -111,25 +111,21 @@ func (ec *EthereumClient) GetAssertionConfirmedLog(ctx context.Context) (*rollup
 }
 
 func (ec *EthereumClient) GetAssertionCreatedLog(ctx context.Context) (*rollupcore.RollupCoreAssertionCreated, error) {
-	// 1. Get latest assertion hash
 	hash, err := ec.GetLatestAssertion(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Fetch log
 	log, err := ec.getAssertionLog(ctx, common.HexToHash("0x901c3aee23cf4478825462caaab375c606ab83516060388344f0650340753630"), hash)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. Parse
 	created, err := ec.rollupCore.ParseAssertionCreated(*log)
 	if err != nil {
 		return nil, err
 	}
 
-	// 4. Validate it (mirroring Rust behavior)
 	err = ec.ValidateAssertion(ctx, created)
 	if err != nil {
 		return nil, err
