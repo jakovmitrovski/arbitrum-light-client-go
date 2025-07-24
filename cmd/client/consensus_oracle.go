@@ -43,6 +43,15 @@ func getSha256(msg []byte) string {
 }
 
 func ExecuteConsensusOracle(ctx context.Context, prevL1Data MessageTrackingL1Data, currL1Data MessageTrackingL1Data, parentChainURL string, childChainId uint64, beaconRPCURL string) (bool, error) {
+	if prevL1Data.Message.Header.Kind == arbostypes.L1MessageType_Initialize {
+		messages, _, err := StartBatchHandler(ctx, prevL1Data, parentChainURL, childChainId, beaconRPCURL)
+		if err != nil {
+			return false, err
+		}
+
+		return getSha256(messages[0].L2msg) == getSha256(currL1Data.Message.L2msg), nil
+	}
+
 	if prevL1Data.L1TxHash == currL1Data.L1TxHash {
 		messages, _, err := StartBatchHandler(ctx, prevL1Data, parentChainURL, childChainId, beaconRPCURL)
 		if err != nil {

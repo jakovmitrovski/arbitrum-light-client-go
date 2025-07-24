@@ -1,1 +1,5 @@
 .env
+spam-txs.sh
+out/
+cache/
+measurements/venv/

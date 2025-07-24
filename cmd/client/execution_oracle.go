@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -67,8 +66,6 @@ func handleInitializeMessage(arbClient *ArbitrumClient, message *arbostypes.L1In
 		panic(err)
 	}
 
-	fmt.Println("init message encountered")
-
 	initMessage, err := message.ParseInitMessage()
 	if err != nil {
 		panic(err)
@@ -88,18 +85,15 @@ func handleInitializeMessage(arbClient *ArbitrumClient, message *arbostypes.L1In
 	}
 
 	newBlock := arbosState.MakeGenesisBlock(common.Hash{}, chainConfig.ArbitrumChainParams.GenesisBlockNum, 0, statedb.IntermediateRoot(true), chainConfig)
-	fmt.Println("genesisBlock.Root()", newBlock.Root())
 	receipts := types.Receipts{}
 
 	chainContext := &SimpleChainContext{chainConfig: chainConfig, client: arbClient}
 
 	for i, extraMessage := range extraMessages {
 		newBlock, receipts, err = arbos.ProduceBlock(extraMessage, 0, newBlock.Header(), statedb, chainContext, false, core.MessageReplayMode)
-		fmt.Println("newBlock.Header().Root", newBlock.Header().Root.Hex())
 		if err != nil {
 			panic(fmt.Sprintf("Error producing block: %v", err.Error()))
 		}
-		fmt.Println("FOR LOOP SOLVING....")
 
 		if i == len(extraMessages)-1 {
 			for _, receipt := range receipts {
@@ -112,64 +106,35 @@ func handleInitializeMessage(arbClient *ArbitrumClient, message *arbostypes.L1In
 }
 
 func handleNonInitializeMessage(ctx context.Context, arbClient *ArbitrumClient, lastBlockHeader *types.Header, message *arbostypes.L1IncomingMessage, expected_block_header *types.Header, chainId uint64) bool {
-	fmt.Println("lastBlockHeader.Root", lastBlockHeader.Root.Hex())
-	fmt.Println("expected_block_header.Root", expected_block_header.Root.Hex())
-
-	// statedb, err := arbClient.GetStateDBFromComprehensiveAccessList(ctx, message, lastBlockHeader, chainId)
 	statedb, _, _, err := arbClient.ReconstructStateFromProofsAndTrace(ctx, expected_block_header, lastBlockHeader, chainId)
-	// statedb, err := arbClient.GetStateDBFromProofsAndTraceReconciliation(ctx, expected_block_header, lastBlockHeader, chainId)
 	if err != nil {
 		panic(fmt.Sprintf("Error opening state db: %v", err.Error()))
 	}
 
-	// Debug: Check initial state root
-	initialRoot := statedb.IntermediateRoot(false)
-	fmt.Printf("Initial state root: %s\n", initialRoot.Hex())
-
-	// Debug: Check if the state root matches the previous block
-	if initialRoot != lastBlockHeader.Root {
-		fmt.Printf("WARNING: Initial state root (%s) does not match last block root (%s)\n",
-			initialRoot.Hex(), lastBlockHeader.Root.Hex())
-	} else {
-		fmt.Printf("✅ Initial state root matches last block root\n")
-	}
-
 	chainConfig := chaininfo.ArbitrumDevTestChainConfig()
-	// chainConfig := chaininfo.ArbitrumOneChainConfig()
 
 	_ = arbosState.MakeGenesisBlock(lastBlockHeader.ParentHash, lastBlockHeader.Number.Uint64(), lastBlockHeader.Time, statedb.IntermediateRoot(false), chainConfig)
 	chainContext := &SimpleChainContext{chainConfig: chainConfig, client: arbClient}
 
-	txs, _ := arbos.ParseL2Transactions(message, big.NewInt(int64(chainId)))
-	for _, tx := range txs {
-		fmt.Println("tx", tx.Hash().Hex())
-	}
-
-	newBlock, receipts, err := arbos.ProduceBlock(message, 0, lastBlockHeader, statedb, chainContext, false, core.MessageReplayMode)
+	newBlock, _, err := arbos.ProduceBlock(message, 0, lastBlockHeader, statedb, chainContext, false, core.MessageReplayMode)
 	if err != nil {
 		fmt.Printf("Failed to produce block: %v\n", err)
 		return false
 	}
 
-	// Debug: Check final state root
-	fmt.Printf("New block root: %s\n", newBlock.Root().Hex())
-	fmt.Printf("Expected block root: %s\n", expected_block_header.Root.Hex())
+	// THIS IS FOR DEBUGGING PURPOSES ONLY.
+	// fmt.Printf("New block root: %s\n", newBlock.Root().Hex())
+	// fmt.Printf("Expected block root: %s\n", expected_block_header.Root.Hex())
 
 	// Debug: Print receipt information
-	fmt.Printf("Number of receipts: %d\n", len(receipts))
-	for _, receipt := range receipts {
-		fmt.Printf("receipt %s %d\n", receipt.TxHash.Hex(), receipt.Status)
-	}
+	// fmt.Printf("Number of receipts: %d\n", len(receipts))
+	// for _, receipt := range receipts {
+	// 	fmt.Printf("receipt %s %d\n", receipt.TxHash.Hex(), receipt.Status)
+	// }
 
-	//arbClient.InspectAccountStorage(statedb, common.HexToAddress("0xA4b05FffffFffFFFFfFFfffFfffFFfffFfFfFFFf"))
-	// Then find all differences to see what's missing
 	// fmt.Printf("🔍 Finding all state differences...\n")
 	// arbClient.FindStateDifferences(ctx, statedb, accountSet, expected_block_header)
-
-	// First verify the accounts/slots from trace
 	// arbClient.VerifyStateAgainstProofs(ctx, statedb, accountSet, slotSet, expected_block_header)
-
-	// arbClient.DiagnoseArbOSStorageMismatch(ctx, statedb, expected_block_header)
 
 	return validateBlockHeaders(newBlock.Header(), expected_block_header)
 }
