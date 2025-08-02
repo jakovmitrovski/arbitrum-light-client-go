@@ -38,8 +38,6 @@ func main() {
 	proverRpcURLs := strings.Split(os.Getenv("PROVERS"), ",")
 	rollupCoreAddr := common.HexToAddress(os.Getenv("ROLLUP_CORE_ADDRESS"))
 
-	// accountAddress := common.HexToAddress(os.Getenv("ACCOUNT_ADDRESS"))
-
 	ethClient, err := NewEthereumClient(ethRpcURL, rollupCoreAddr)
 	if err != nil {
 		log.Fatalf("Failed to init Ethereum client: %v", err)

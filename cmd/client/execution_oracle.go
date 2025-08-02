@@ -122,20 +122,6 @@ func handleNonInitializeMessage(ctx context.Context, arbClient *ArbitrumClient, 
 		return false
 	}
 
-	// THIS IS FOR DEBUGGING PURPOSES ONLY.
-	// fmt.Printf("New block root: %s\n", newBlock.Root().Hex())
-	// fmt.Printf("Expected block root: %s\n", expected_block_header.Root.Hex())
-
-	// Debug: Print receipt information
-	// fmt.Printf("Number of receipts: %d\n", len(receipts))
-	// for _, receipt := range receipts {
-	// 	fmt.Printf("receipt %s %d\n", receipt.TxHash.Hex(), receipt.Status)
-	// }
-
-	// fmt.Printf("🔍 Finding all state differences...\n")
-	// arbClient.FindStateDifferences(ctx, statedb, accountSet, expected_block_header)
-	// arbClient.VerifyStateAgainstProofs(ctx, statedb, accountSet, slotSet, expected_block_header)
-
 	return validateBlockHeaders(newBlock.Header(), expected_block_header)
 }
 

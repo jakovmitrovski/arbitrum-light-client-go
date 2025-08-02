@@ -79,12 +79,10 @@ func (ec *EthereumClient) getAssertionLog(ctx context.Context, topic common.Hash
 		if err != nil {
 			latestBlock -= 1499
 			continue
-			// return nil, err
 		}
 		if len(logs) == 0 {
 			latestBlock -= 1499
 			continue
-			// return nil, fmt.Errorf("no logs found for topic %s", topic.Hex())
 		}
 
 		return &logs[0], nil

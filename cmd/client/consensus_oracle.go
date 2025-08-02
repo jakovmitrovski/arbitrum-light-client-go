@@ -84,12 +84,6 @@ func ExecuteConsensusOracle(ctx context.Context, prevL1Data MessageTrackingL1Dat
 	last := messages1[len(messages1)-1]
 	first := messages2[0]
 
-	// fmt.Println("Comparing", getSha256(last.L2msg), getSha256(prevL1Data.Message.L2msg))
-	// fmt.Println("Comparing", getSha256(first.L2msg), getSha256(currL1Data.Message.L2msg))
-
-	// fmt.Println("last", last.Header.Kind)
-	// fmt.Println("first", first.Header.Kind)
-
 	if getSha256(last.L2msg) == getSha256(prevL1Data.Message.L2msg) && getSha256(first.L2msg) == getSha256(currL1Data.Message.L2msg) {
 		return true, nil
 	} else {
@@ -226,23 +220,9 @@ func StartBatchHandler(ctx context.Context, L1Data MessageTrackingL1Data, parent
 
 	messages, err := LoadMessages(parsedSequencerMsg, lastBatchDelayedCount, backend, config.ChildChainId)
 
+	if err != nil {
+		return nil, 0, err
+	}
+
 	return messages, targetBatchNum, nil
-
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// batchData, err := batchFetcher(targetBatchNum)
-
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// gas := arbostypes.ComputeBatchGasCost(batchData)
-	// msg.BatchGasCost = &gas
-
-	// if err != nil {
-	// 	fmt.Println("error", err)
-	// 	panic(err)
-	// }
 }
