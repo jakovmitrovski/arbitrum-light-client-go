@@ -71,14 +71,15 @@ func (mr *MeasurementRunner) RunTournamentMeasurements(arbClients []*ArbitrumCli
 	}
 
 	blockStart := uint64(100)
-	blockEnd := uint64(200)
-	blockStep := uint64(100)
+	blockEnd := uint64(10100)
+	blockStep := uint64(1000)
+	currentIteration := 0
 
-	for provers := 0; provers < len(arbClients); provers++ {
-		for iteration := 0; iteration < mr.config.NumIterations; iteration++ {
-			for blockNumber := blockStart; blockNumber <= blockEnd; blockNumber += blockStep {
-				currentIteration := uint64(blockNumber/blockStep) + (uint64(iteration) * uint64(blockEnd/blockStep)) + (uint64(provers) * uint64(mr.config.NumIterations))
-
+	length := len(arbClients)
+	for blockNumber := blockStart; blockNumber <= blockEnd; blockNumber += blockStep {
+		for provers := 0; provers < length; provers++ {
+			for iteration := 0; iteration < mr.config.NumIterations; iteration++ {
+				currentIteration++
 				fmt.Printf("Tournament iteration %d/%d\n", currentIteration, uint64(mr.config.NumIterations)*uint64(len(arbClients))*((blockEnd-blockStart+blockStep)/blockStep))
 				var inStart, outStart uint64
 				if mr.config.MeasureNetwork {
@@ -115,6 +116,7 @@ func (mr *MeasurementRunner) RunTournamentMeasurements(arbClients []*ArbitrumCli
 				time.Sleep(100 * time.Millisecond)
 			}
 		}
+		time.Sleep(5000 * time.Millisecond)
 	}
 
 	return mr.saveResults("tournament_measurements.csv")
@@ -195,49 +197,51 @@ func (mr *MeasurementRunner) RunConsensusOracleMeasurements() error {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}
 
-	testBlock := uint64(1350)
+	testBlocks := []uint64{1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000}
 
-	for iteration := 1; iteration <= mr.config.NumIterations; iteration++ {
-		fmt.Printf("Consensus oracle iteration %d/%d\n", iteration, mr.config.NumIterations)
+	for _, testBlock := range testBlocks {
+		for iteration := 1; iteration <= mr.config.NumIterations; iteration++ {
+			fmt.Printf("Consensus oracle iteration %d/%d\n", iteration, mr.config.NumIterations)
 
-		result := MeasurementResult{
-			BlockNumber: testBlock,
-			Iteration:   iteration,
-			Timestamp:   time.Now(),
-		}
-
-		prevTrackingL1Data := mr.arbClient.GetL1DataAt(mr.ctx, testBlock, mr.arbChainId)
-		currTrackingL1Data := mr.arbClient.GetL1DataAt(mr.ctx, testBlock+1, mr.arbChainId)
-
-		var inStart, outStart uint64
-		if mr.config.MeasureNetwork {
-			inStart, outStart, _ = mr.getNetworkBytes()
-		}
-
-		start := time.Now()
-		_, err := ExecuteConsensusOracle(mr.ctx, prevTrackingL1Data, currTrackingL1Data, mr.ethRpcURL, mr.arbChainId, mr.beaconRpcURL)
-		result.ConsensusOracleTime = time.Since(start)
-
-		if err != nil {
-			log.Printf("Consensus oracle error: %v", err)
-		}
-
-		if mr.config.MeasureSystem {
-			mr.addSystemMeasurements(&result)
-		}
-
-		if mr.config.MeasureNetwork {
-			inBytes, outBytes, err := mr.getNetworkBytes()
-			if err != nil {
-				log.Printf("Failed to get network bytes: %v", err)
+			result := MeasurementResult{
+				BlockNumber: testBlock,
+				Iteration:   iteration,
+				Timestamp:   time.Now(),
 			}
-			result.NetworkBytesIn = inBytes - inStart
-			result.NetworkBytesOut = outBytes - outStart
+
+			prevTrackingL1Data := mr.arbClient.GetL1DataAt(mr.ctx, testBlock, mr.arbChainId)
+			currTrackingL1Data := mr.arbClient.GetL1DataAt(mr.ctx, testBlock+1, mr.arbChainId)
+
+			var inStart, outStart uint64
+			if mr.config.MeasureNetwork {
+				inStart, outStart, _ = mr.getNetworkBytes()
+			}
+
+			start := time.Now()
+			_, err := ExecuteConsensusOracle(mr.ctx, prevTrackingL1Data, currTrackingL1Data, mr.ethRpcURL, mr.arbChainId, mr.beaconRpcURL)
+			result.ConsensusOracleTime = time.Since(start)
+
+			if err != nil {
+				log.Printf("Consensus oracle error: %v", err)
+			}
+
+			if mr.config.MeasureSystem {
+				mr.addSystemMeasurements(&result)
+			}
+
+			if mr.config.MeasureNetwork {
+				inBytes, outBytes, err := mr.getNetworkBytes()
+				if err != nil {
+					log.Printf("Failed to get network bytes: %v", err)
+				}
+				result.NetworkBytesIn = inBytes - inStart
+				result.NetworkBytesOut = outBytes - outStart
+			}
+
+			mr.results = append(mr.results, result)
+
+			time.Sleep(100 * time.Millisecond)
 		}
-
-		mr.results = append(mr.results, result)
-
-		time.Sleep(100 * time.Millisecond)
 	}
 
 	return mr.saveResults("consensus_oracle_measurements.csv")
@@ -250,60 +254,62 @@ func (mr *MeasurementRunner) RunExecutionOracleMeasurements() error {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}
 
-	testBlock := uint64(1350)
+	testBlocks := []uint64{1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000}
 
-	for iteration := 1; iteration <= mr.config.NumIterations; iteration++ {
-		fmt.Printf("Execution oracle iteration %d/%d\n", iteration, mr.config.NumIterations)
+	for _, testBlock := range testBlocks {
+		for iteration := 1; iteration <= mr.config.NumIterations; iteration++ {
+			fmt.Printf("Execution oracle iteration %d/%d\n", iteration, mr.config.NumIterations)
 
-		result := MeasurementResult{
-			BlockNumber: testBlock,
-			Iteration:   iteration,
-			Timestamp:   time.Now(),
-		}
-
-		prevBlock, err := mr.arbClient.GetBlockByNumber(mr.ctx, big.NewInt(int64(testBlock-1)))
-		if err != nil {
-			log.Printf("Failed to get prev block: %v", err)
-			continue
-		}
-
-		currBlock, err := mr.arbClient.GetBlockByNumber(mr.ctx, big.NewInt(int64(testBlock)))
-		if err != nil {
-			log.Printf("Failed to get curr block: %v", err)
-			continue
-		}
-
-		currTrackingL1Data := mr.arbClient.GetL1DataAt(mr.ctx, testBlock+1, mr.arbChainId)
-
-		var inStart, outStart uint64
-		if mr.config.MeasureNetwork {
-			inStart, outStart, _ = mr.getNetworkBytes()
-		}
-
-		start := time.Now()
-		executionResult := ExecuteExecutionOracle(mr.ctx, mr.arbClient, prevBlock.Header(), &currTrackingL1Data.Message, currBlock.Header(), mr.arbChainId)
-		result.ExecutionOracleTime = time.Since(start)
-
-		if !executionResult {
-			log.Printf("Execution oracle failed for iteration %d", iteration)
-		}
-
-		if mr.config.MeasureSystem {
-			mr.addSystemMeasurements(&result)
-		}
-
-		if mr.config.MeasureNetwork {
-			inBytes, outBytes, err := mr.getNetworkBytes()
-			if err != nil {
-				log.Printf("Failed to get network bytes: %v", err)
+			result := MeasurementResult{
+				BlockNumber: testBlock,
+				Iteration:   iteration,
+				Timestamp:   time.Now(),
 			}
-			result.NetworkBytesIn = inBytes - inStart
-			result.NetworkBytesOut = outBytes - outStart
+
+			prevBlock, err := mr.arbClient.GetBlockByNumber(mr.ctx, big.NewInt(int64(testBlock-1)))
+			if err != nil {
+				log.Printf("Failed to get prev block: %v", err)
+				continue
+			}
+
+			currBlock, err := mr.arbClient.GetBlockByNumber(mr.ctx, big.NewInt(int64(testBlock)))
+			if err != nil {
+				log.Printf("Failed to get curr block: %v", err)
+				continue
+			}
+
+			currTrackingL1Data := mr.arbClient.GetL1DataAt(mr.ctx, testBlock+1, mr.arbChainId)
+
+			var inStart, outStart uint64
+			if mr.config.MeasureNetwork {
+				inStart, outStart, _ = mr.getNetworkBytes()
+			}
+
+			start := time.Now()
+			executionResult := ExecuteExecutionOracle(mr.ctx, mr.arbClient, prevBlock.Header(), &currTrackingL1Data.Message, currBlock.Header(), mr.arbChainId)
+			result.ExecutionOracleTime = time.Since(start)
+
+			if !executionResult {
+				log.Printf("Execution oracle failed for iteration %d", iteration)
+			}
+
+			if mr.config.MeasureSystem {
+				mr.addSystemMeasurements(&result)
+			}
+
+			if mr.config.MeasureNetwork {
+				inBytes, outBytes, err := mr.getNetworkBytes()
+				if err != nil {
+					log.Printf("Failed to get network bytes: %v", err)
+				}
+				result.NetworkBytesIn = inBytes - inStart
+				result.NetworkBytesOut = outBytes - outStart
+			}
+
+			mr.results = append(mr.results, result)
+
+			time.Sleep(100 * time.Millisecond)
 		}
-
-		mr.results = append(mr.results, result)
-
-		time.Sleep(100 * time.Millisecond)
 	}
 
 	return mr.saveResults("execution_oracle_measurements.csv")

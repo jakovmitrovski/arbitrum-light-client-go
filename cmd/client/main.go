@@ -149,7 +149,7 @@ func RunMeasurements(ctx context.Context, arbClients []*ArbitrumClient, ethRpcUR
 	// Example 1: Tournament measurements
 	fmt.Println("\n1. Running Tournament measurements...")
 	config1 := &MeasurementConfig{
-		NumIterations:  10,
+		NumIterations:  5,
 		OutputDir:      "./measurements/tournament",
 		MeasureSystem:  true,
 		MeasureNetwork: true,
@@ -201,7 +201,6 @@ func test(arbClient *ArbitrumClient, ctx context.Context, beaconRpcURL string, e
 	// }
 
 	for index := uint64(1350); index < 11510; index += 1000 {
-		fmt.Println("index", index)
 		if index == 11 {
 			continue
 		}
@@ -282,8 +281,6 @@ func TestOracles(arbClient *ArbitrumClient, index uint64, ctx context.Context, b
 
 		return executionOracleResult
 	} else {
-
-		fmt.Println("index", index)
 		consensusOracleResult, err := ExecuteConsensusOracle(ctx, prevTrackingL1Data, currTrackingL1Data, ethClientUrl, arbChainId, beaconRpcURL)
 
 		if !consensusOracleResult || err != nil {
